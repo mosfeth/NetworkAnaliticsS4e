@@ -71,6 +71,9 @@ class RepositoryError(RuntimeError):
     pass
 
 
+REACHABLE_STATUSES = {"ok", "partial"}
+
+
 class FrontendRepository:
     """Repositório para leitura de dados do Supabase no FrontEnd."""
     
@@ -81,16 +84,25 @@ class FrontendRepository:
     
     def _execute(self, query) -> list[dict[str, Any]]:
         """Executa query e retorna dados ou levanta exceção."""
-        try:
-            response = query.execute()
-        except Exception as exc:
-            raise RepositoryError(f"Erro ao executar consulta: {exc}") from exc
+        max_retries = 3
+        last_error = None
         
-        error = getattr(response, "error", None)
-        if error:
-            raise RepositoryError(str(error))
+        for attempt in range(max_retries):
+            try:
+                response = query.execute()
+                error = getattr(response, "error", None)
+                if error:
+                    raise RepositoryError(str(error))
+                return response.data or []
+            except Exception as exc:
+                last_error = exc
+                if attempt < max_retries - 1:
+                    import time
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                break
         
-        return response.data or []
+        raise RepositoryError(f"Erro ao executar consulta: {last_error}")
     
     def health_check(self) -> tuple[bool, str]:
         """Verifica conectividade com Supabase."""
@@ -175,9 +187,10 @@ class FrontendRepository:
             .select("*")
             .eq("machine_id", machine_id)
             .gte("measured_at", cutoff)
-            .order("measured_at", desc=False)  # Ordem cronológica para gráficos
+            .order("measured_at", desc=False)
             .limit(limit)
         )
+        data = [m for m in data if m.get("status") in REACHABLE_STATUSES]
         return data
     
     def get_latest_measurement(self, machine_id: str) -> dict | None:
@@ -291,6 +304,44 @@ class FrontendRepository:
         
         return result
     
+    def get_clients_with_machines_summary(self) -> list[dict[str, Any]]:
+        """
+        Retorna clientes agrupados com suas máquinas (rede local + internet check),
+        incluindo última medição de cada máquina para exibição no card consolidado.
+        """
+        clients = self.list_clients()
+        result = []
+        
+        for client in clients:
+            machines = self.list_machines(client_id=client.id, active_only=True)
+            
+            local_machines = []
+            internet_machine = None
+            
+            for machine in machines:
+                latest = self.get_latest_measurement(machine.id)
+                quality = self.get_network_quality_metrics(machine.id, hours=1)
+                status_events = self.get_device_status_events(machine_id=machine.id, hours=24, limit=5)
+                machine_data = {
+                    "machine": machine,
+                    "latest_measurement": latest,
+                    "quality_metrics": quality,
+                    "status_events": status_events,
+                }
+                if machine.tag == "INTERNET-CHECK":
+                    internet_machine = machine_data
+                else:
+                    local_machines.append(machine_data)
+            
+            if local_machines or internet_machine:
+                result.append({
+                    "client": client,
+                    "local_machines": local_machines,
+                    "internet_machine": internet_machine,
+                })
+        
+        return result
+    
     def save_feedback(self, machine_id: str, label: str, measurement: Optional[dict]) -> dict | None:
         """Salva feedback do operador no Supabase."""
         from datetime import datetime, timezone
@@ -310,3 +361,157 @@ class FrontendRepository:
         
         result = self._execute(self.client.table("machine_feedback").insert(data))
         return result[0] if result else None
+    
+    def list_machine_feedback(self, machine_id: str, limit: int = 100) -> list[dict]:
+        """Lista feedbacks de uma máquina."""
+        data = self._execute(
+            self.client.table("machine_feedback")
+            .select("*")
+            .eq("machine_id", machine_id)
+            .order("created_at", desc=True)
+            .limit(limit)
+        )
+        return data or []
+    
+    def get_network_quality_metrics(self, machine_id: str, hours: int = 24) -> dict[str, Any]:
+        """
+        Calcula métricas de qualidade de rede a partir das medições recentes.
+        
+        Returns:
+            Dict com:
+            - avg_latency
+            - avg_jitter
+            - availability_pct
+            - min_latency
+            - max_latency
+            - total_count
+            - ok_count
+            - status_detail
+        """
+        measurements = self.get_measurements(machine_id, hours=hours, limit=500)
+        measurements = [m for m in measurements if m.get("status") in REACHABLE_STATUSES]
+        if not measurements:
+            return {
+                "avg_latency": None,
+                "avg_jitter": None,
+                "availability_pct": None,
+                "min_latency": None,
+                "max_latency": None,
+                "total_count": 0,
+                "ok_count": 0,
+                "status_detail": "Sem dados",
+            }
+        
+        latencies = [m.get("latency_ms") for m in measurements if m.get("latency_ms") is not None]
+        jitters = [m.get("jitter_ms") for m in measurements if m.get("jitter_ms") is not None]
+        packet_losses = [m.get("packet_loss_percent", 0) for m in measurements if m.get("packet_loss_percent") is not None]
+        ok_count = sum(1 for m in measurements if m.get("status") == "ok")
+        total_count = len(measurements)
+        availability = round((ok_count / total_count) * 100, 1) if total_count else 0.0
+        avg_packet_loss = round(sum(packet_losses) / len(packet_losses), 1) if packet_losses else 0.0
+        
+        if availability >= 95:
+            status_detail = "Estável"
+        elif availability >= 80:
+            status_detail = "Instável"
+        elif availability > 0:
+            status_detail = "Crítico"
+        else:
+            status_detail = "Sem dados"
+        
+        return {
+            "avg_latency_ms": round(sum(latencies) / len(latencies), 1) if latencies else None,
+            "avg_jitter_ms": round(sum(jitters) / len(jitters), 1) if jitters else None,
+            "packet_loss_pct": avg_packet_loss,
+            "availability_pct": availability,
+            "min_latency": round(min(latencies), 1) if latencies else None,
+            "max_latency": round(max(latencies), 1) if latencies else None,
+            "total_count": total_count,
+            "ok_count": ok_count,
+            "status_detail": status_detail,
+        }
+
+    def save_network_quality_metric(self, machine_id: str, metrics: dict[str, Any]) -> dict | None:
+        """Salva métrica horária de qualidade de rede no Supabase."""
+        data = {
+            "machine_id": machine_id,
+            "measured_at": metrics.get("measured_at") or datetime.now(timezone.utc).isoformat(),
+            "avg_latency_ms": metrics.get("avg_latency_ms"),
+            "avg_jitter_ms": metrics.get("avg_jitter_ms"),
+            "packet_loss_pct": metrics.get("packet_loss_pct", 0.0),
+            "total_measurements": metrics.get("total_measurements", 0),
+            "quality_status": metrics.get("quality_status", "Sem dados"),
+        }
+        result = self._execute(self.client.table("network_quality_metrics").insert(data))
+        return result[0] if result else None
+
+    def list_network_quality_metrics(self, machine_id: str, limit: int = 200) -> list[dict]:
+        """Lista métricas horárias de qualidade de rede."""
+        data = self._execute(
+            self.client.table("network_quality_metrics")
+            .select("*")
+            .eq("machine_id", machine_id)
+            .order("measured_at", desc=True)
+            .limit(limit)
+        )
+        return data or []
+
+    def save_ml_model_weights(self, model_name: str, model_version: str, weights: dict, accuracy: float | None = None) -> dict | None:
+        """Salva pesos do modelo ML no Supabase."""
+        data = {
+            "model_name": model_name,
+            "model_version": model_version,
+            "weights": weights,
+            "accuracy": accuracy,
+        }
+        result = self._execute(self.client.table("ml_model_weights").insert(data))
+        return result[0] if result else None
+
+    def get_latest_ml_model_weights(self, model_name: str) -> dict | None:
+        """Obtém os pesos mais recentes de um modelo ML."""
+        data = self._execute(
+            self.client.table("ml_model_weights")
+            .select("*")
+            .eq("model_name", model_name)
+            .order("trained_at", desc=True)
+            .limit(1)
+        )
+        return data[0] if data else None
+
+    def save_ml_training_history(self, model_name: str, model_version: str, training_samples: int, accuracy: float | None = None, training_duration_seconds: float | None = None, metadata: dict | None = None) -> dict | None:
+        """Salva histórico de treino do modelo ML."""
+        data = {
+            "model_name": model_name,
+            "model_version": model_version,
+            "training_samples": training_samples,
+            "accuracy": accuracy,
+            "training_duration_seconds": training_duration_seconds,
+            "metadata": metadata or {},
+        }
+        result = self._execute(self.client.table("ml_training_history").insert(data))
+        return result[0] if result else None
+
+    def list_ml_training_history(self, model_name: str, limit: int = 50) -> list[dict]:
+        """Lista histórico de treinos de um modelo."""
+        data = self._execute(
+            self.client.table("ml_training_history")
+            .select("*")
+            .eq("model_name", model_name)
+            .order("trained_at", desc=True)
+            .limit(limit)
+        )
+        return data or []
+
+    def get_device_status_events(
+        self, machine_id: str | None = None, client_id: str | None = None, hours: int = 24, limit: int = 100
+    ) -> list[dict]:
+        """Retorna eventos de status do dispositivo (alcançável/inacessível)."""
+        from datetime import datetime, timedelta, timezone
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        query = self.client.table("device_status_events").select("*").gte("measured_at", cutoff).order("measured_at", desc=True).limit(limit)
+        if machine_id:
+            query = query.eq("machine_id", machine_id)
+        if client_id:
+            query = query.eq("client_id", client_id)
+        data = self._execute(query)
+        return data or []

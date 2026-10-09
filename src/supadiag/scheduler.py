@@ -38,9 +38,10 @@ class WindowsScheduler:
             action,
             "/SC",
             "ONSTART",
-            "/V1",
+            "/RU",
+            "SYSTEM",
             "/RL",
-            "LIMITED",
+            "HIGHEST",
         ]
         completed = subprocess.run(command, capture_output=True, text=True, timeout=30)
         if completed.returncode != 0:

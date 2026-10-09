@@ -119,20 +119,69 @@ CREATE TABLE IF NOT EXISTS public.machine_feedback (
 CREATE INDEX IF NOT EXISTS idx_feedback_machine ON public.machine_feedback(machine_id);
 CREATE INDEX IF NOT EXISTS idx_feedback_created ON public.machine_feedback(created_at DESC);
 
-ALTER TABLE public.clients ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.machines ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.measurements ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.traceroutes ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.traceroute_hops ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.alert_rules ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.alert_events ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.machine_feedback ENABLE ROW LEVEL SECURITY;
+CREATE TABLE IF NOT EXISTS public.network_quality_metrics (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    machine_id uuid NOT NULL REFERENCES public.machines(id) ON DELETE CASCADE,
+    measured_at timestamptz NOT NULL DEFAULT now(),
+    avg_latency_ms numeric,
+    avg_jitter_ms numeric,
+    packet_loss_pct numeric NOT NULL,
+    total_measurements int NOT NULL,
+    quality_status text NOT NULL CHECK (quality_status IN ('BOM', 'MEDIO', 'RUIM', 'Sem dados')),
+    created_at timestamptz NOT NULL DEFAULT now()
+);
 
-CREATE POLICY "service_role_all_clients" ON public.clients FOR ALL TO service_role USING (true) WITH CHECK (true);
-CREATE POLICY "service_role_all_machines" ON public.machines FOR ALL TO service_role USING (true) WITH CHECK (true);
-CREATE POLICY "service_role_all_measurements" ON public.measurements FOR ALL TO service_role USING (true) WITH CHECK (true);
-CREATE POLICY "service_role_all_traceroutes" ON public.traceroutes FOR ALL TO service_role USING (true) WITH CHECK (true);
-CREATE POLICY "service_role_all_traceroute_hops" ON public.traceroute_hops FOR ALL TO service_role USING (true) WITH CHECK (true);
-CREATE POLICY "service_role_all_alert_rules" ON public.alert_rules FOR ALL TO service_role USING (true) WITH CHECK (true);
-CREATE POLICY "service_role_all_alert_events" ON public.alert_events FOR ALL TO service_role USING (true) WITH CHECK (true);
-CREATE POLICY "service_role_all_machine_feedback" ON public.machine_feedback FOR ALL TO service_role USING (true) WITH CHECK (true);
+CREATE TABLE IF NOT EXISTS public.ml_model_weights (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    model_name text NOT NULL,
+    model_version text NOT NULL,
+    weights jsonb NOT NULL,
+    accuracy float,
+    trained_at timestamptz NOT NULL DEFAULT now(),
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS public.ml_training_history (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    model_name text NOT NULL,
+    model_version text NOT NULL,
+    training_samples int NOT NULL,
+    accuracy float,
+    training_duration_seconds float,
+    metadata jsonb,
+    trained_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_network_quality_machine ON public.network_quality_metrics(machine_id);
+CREATE INDEX IF NOT EXISTS idx_network_quality_measured_at ON public.network_quality_metrics(measured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_network_quality_status ON public.network_quality_metrics(quality_status);
+CREATE INDEX IF NOT EXISTS idx_ml_model_version ON public.ml_model_weights(model_name, model_version);
+CREATE INDEX IF NOT EXISTS idx_ml_training_model ON public.ml_training_history(model_name, trained_at DESC);
+
+CREATE TABLE IF NOT EXISTS public.device_status_events (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    machine_id uuid NOT NULL REFERENCES public.machines(id) ON DELETE CASCADE,
+    client_id uuid NOT NULL REFERENCES public.clients(id) ON DELETE CASCADE,
+    event_type text NOT NULL CHECK (event_type IN ('reachable', 'unreachable', 'packet_loss')),
+    packet_loss_percent numeric,
+    latency_ms numeric,
+    jitter_ms numeric,
+    packets_sent int,
+    packets_received int,
+    previous_status text,
+    measured_at timestamptz NOT NULL DEFAULT now(),
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_device_status_machine ON public.device_status_events(machine_id);
+CREATE INDEX IF NOT EXISTS idx_device_status_measured_at ON public.device_status_events(measured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_device_status_type ON public.device_status_events(event_type);
+
+ALTER TABLE public.network_quality_metrics ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.ml_model_weights ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.ml_training_history ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "service_role_all_network_quality" ON public.network_quality_metrics FOR ALL TO service_role USING (true) WITH CHECK (true);
+CREATE POLICY "service_role_all_ml_model_weights" ON public.ml_model_weights FOR ALL TO service_role USING (true) WITH CHECK (true);
+CREATE POLICY "service_role_all_ml_training_history" ON public.ml_training_history FOR ALL TO service_role USING (true) WITH CHECK (true);
+CREATE POLICY "service_role_all_device_status_events" ON public.device_status_events FOR ALL TO service_role USING (true) WITH CHECK (true);

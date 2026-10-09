@@ -12,12 +12,14 @@ import os
 from config import settings
 from repository import FrontendRepository, RepositoryError
 from components import (
+    render_client_card,
     render_machine_card,
     render_metrics_charts,
     render_sidebar_filters,
     render_status_badge,
     render_traceroute_tab,
     render_alert_tab,
+    render_device_status_events,
 )
 
 # Configuração da página
@@ -66,8 +68,89 @@ def get_repository() -> FrontendRepository:
     return FrontendRepository()
 
 
+@st.cache_data(ttl=30)
+def _cached_clients_summary():
+    """Cache de clientes com máquinas (rede local + internet)."""
+    repo = get_repository()
+    return repo.get_clients_with_machines_summary()
+
+
+@st.cache_data(ttl=30)
+def _cached_measurements(machine_id: str, hours: int, limit: int):
+    repo = get_repository()
+    return repo.get_measurements(machine_id, hours=hours, limit=limit)
+
+
+@st.cache_data(ttl=60)
+def _cached_accuracy_data(machine_id: str):
+    try:
+        from supabase import create_client
+        from config import settings as fe_settings
+        sb = create_client(fe_settings.SUPABASE_URL, fe_settings.SUPABASE_KEY)
+        feedbacks = sb.table("machine_feedback").select("*").eq("machine_id", machine_id).order("created_at", desc=True).limit(100).execute().data or []
+        return feedbacks
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=30)
+def _cached_machine_feedback(limit: int):
+    repo = get_repository()
+    return repo.list_machine_feedback(limit=limit)
+
+
+@st.cache_data(ttl=30)
+def _cached_sidebar_events():
+    repo = get_repository()
+    return get_sidebar_events(repo, 30)
+
+
+@st.cache_data(ttl=60)
+def _cached_ai_feedbacks():
+    try:
+        from supabase import create_client
+        from config import settings as fe_settings
+        sb = create_client(fe_settings.SUPABASE_URL, fe_settings.SUPABASE_KEY)
+        feedbacks = sb.table("machine_feedback").select("machine_id, label, packet_loss_percent, latency_ms, jitter_ms, created_at").order("created_at", desc=True).limit(15).execute().data or []
+        return feedbacks
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=30)
+def _cached_sidebar_alerts():
+    repo = get_repository()
+    alerts = []
+    try:
+        active_alerts = repo.list_alert_rules()
+        if active_alerts:
+            for rule in active_alerts[:5]:
+                machine_tag = rule.get("machine_tag", "")
+                machine_id = rule.get("machine_id", "")
+                if machine_id:
+                    machine = repo.get_machine(machine_id)
+                    machine_tag = machine.tag if machine else machine_id[:8]
+                event = repo.get_active_alert_event(rule.get("id", ""))
+                if event:
+                    severity = event.get("severity", "warning")
+                    metric = event.get("metric", "")
+                    value = event.get("metric_value", 0)
+                    if severity == "critical" or event.get("status") == "firing":
+                        icon = "[CRITICAL]"
+                    elif severity == "warning":
+                        icon = "[WARNING]"
+                    else:
+                        icon = "[ACK]"
+                    alerts.append((machine_tag, icon, metric, value, severity))
+    except Exception:
+        pass
+    return alerts
+
+
 def init_session_state() -> None:
     """Inicializa estado da sessão."""
+    if "selected_client_id" not in st.session_state:
+        st.session_state.selected_client_id = None
     if "selected_machine_id" not in st.session_state:
         st.session_state.selected_machine_id = None
     if "view_mode" not in st.session_state:
@@ -75,9 +158,16 @@ def init_session_state() -> None:
 
 
 def on_machine_click(machine_id: str) -> None:
-    """Callback ao clicar em um card de máquina."""
+    """Callback ao clicar em um card de máquina (compatibilidade)."""
     st.session_state.selected_machine_id = machine_id
     st.session_state.view_mode = "detail"
+    st.rerun()
+
+
+def on_client_click(client_id: str) -> None:
+    """Callback ao clicar em um card de cliente."""
+    st.session_state.selected_client_id = client_id
+    st.session_state.view_mode = "client_detail"
     st.rerun()
 
 
@@ -219,63 +309,138 @@ def get_sidebar_events(repo: FrontendRepository, limit: int = 30) -> list[dict]:
 
 
 def render_cards_view(repo: FrontendRepository, client_id: Optional[str]) -> None:
-    """Renderiza a view de cards (lista de máquinas)."""
-    st.markdown('<h1 class="main-header">AI Network Analyzer</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">Clique em um card para ver métricas detalhadas da máquina</p>', unsafe_allow_html=True)
+    """Renderiza a view de cards (lista de clientes com máquinas agrupadas)."""
+    st.html('<h1 class="main-header">AI Network Analyzer</h1>')
+    st.html('<p class="sub-header">Clique em um cliente para ver métricas detalhadas</p>')
     
-    # Tenta buscar máquinas com status
+    # Tenta buscar clientes com máquinas agrupadas
     try:
-        with st.spinner("Carregando máquinas..."):
-            machines_data = repo.get_machines_with_latest_status()
+        with st.spinner("Carregando clientes..."):
+            clients_data = _cached_clients_summary()
         
         if client_id:
-            machines_data = [m for m in machines_data if m["machine"].client_id == client_id]
+            clients_data = [c for c in clients_data if c["client"].id == client_id]
         
-        if not machines_data:
-            st.info("Nenhuma máquina encontrada com os filtros atuais.")
+        if not clients_data:
+            st.info("Nenhum cliente com máquinas ativas encontrado.")
             return
         
-        # Busca traceroute e alertas para cada máquina
-        for m in machines_data:
-            m["latest_traceroute"] = repo.get_latest_traceroute(m["machine"].id)
-            m["latest_alert_event"] = repo.get_latest_alert_event(m["machine"].id)
-        
         # Métricas gerais
-        total = len(machines_data)
-        ok_count = sum(1 for m in machines_data if m["latest_measurement"] and m["latest_measurement"].get("status") == "ok")
-        warning_count = sum(1 for m in machines_data if m["latest_measurement"] and m["latest_measurement"].get("status") == "partial")
-        critical_count = sum(1 for m in machines_data if m["latest_measurement"] and m["latest_measurement"].get("status") == "unreachable")
-        no_data_count = sum(1 for m in machines_data if not m["latest_measurement"])
+        total_clients = len(clients_data)
+        total_local = sum(len(c["local_machines"]) for c in clients_data)
+        total_internet = sum(1 for c in clients_data if c["internet_machine"])
+        total_machines = total_local + total_internet
+        
+        ok_count = 0
+        warning_count = 0
+        critical_count = 0
+        no_data_count = 0
+        
+        for c in clients_data:
+            for m in c["local_machines"]:
+                if m["latest_measurement"]:
+                    status = m["latest_measurement"].get("status", "")
+                    if status == "ok":
+                        ok_count += 1
+                    elif status == "partial":
+                        warning_count += 1
+                    elif status == "unreachable":
+                        critical_count += 1
+                else:
+                    no_data_count += 1
+            if c["internet_machine"] and c["internet_machine"]["latest_measurement"]:
+                status = c["internet_machine"]["latest_measurement"].get("status", "")
+                if status == "ok":
+                    ok_count += 1
+                elif status == "partial":
+                    warning_count += 1
+                elif status == "unreachable":
+                    critical_count += 1
+            elif c["internet_machine"]:
+                no_data_count += 1
         
         # Alertas ativos
-        alert_active_count = sum(1 for m in machines_data if m["latest_alert_event"] and m["latest_alert_event"].get("status") in ["firing", "acknowledged"])
+        alert_active_count = 0
+        for c in clients_data:
+            for m in c["local_machines"]:
+                latest_alert = repo.get_latest_alert_event(m["machine"].id)
+                if latest_alert and latest_alert.get("status") in ["firing", "acknowledged"]:
+                    alert_active_count += 1
+            if c["internet_machine"]:
+                latest_alert = repo.get_latest_alert_event(c["internet_machine"]["machine"].id)
+                if latest_alert and latest_alert.get("status") in ["firing", "acknowledged"]:
+                    alert_active_count += 1
         
         col1, col2, col3, col4, col5, col6 = st.columns(6)
-        col1.metric("Total", total)
-        col2.metric("OK", ok_count)
-        col3.metric("Parcial", warning_count)
-        col4.metric("Critico", critical_count)
-        col5.metric("Sem dados", no_data_count)
+        col1.metric("Clientes", total_clients)
+        col2.metric("Máquinas Total", total_machines)
+        col3.metric("Rede Local", total_local)
+        col4.metric("Internet", total_internet)
+        col5.metric("OK", ok_count)
         col6.metric("Alertas", alert_active_count)
         
         st.divider()
         
-        # Grid de cards (3 colunas)
-        cols_per_row = 3
-        for i in range(0, len(machines_data), cols_per_row):
+        # Seção de Qualidade de Rede
+        st.markdown("### 📊 Qualidade de Rede")
+        
+        # Calcula métricas de qualidade agregadas
+        quality_bom = 0
+        quality_medio = 0
+        quality_ruim = 0
+        total_quality = 0
+        avg_jitter_all = []
+        avg_latency_all = []
+        avg_loss_all = []
+        
+        for c in clients_data:
+            internet = c.get("internet_machine")
+            if internet:
+                quality_metrics = internet.get("quality_metrics") or {}
+                status = quality_metrics.get("quality_status")
+                if status == "BOM":
+                    quality_bom += 1
+                elif status == "MEDIO":
+                    quality_medio += 1
+                elif status == "RUIM":
+                    quality_ruim += 1
+                total_quality += 1
+                
+                if quality_metrics.get("avg_jitter_ms") is not None:
+                    avg_jitter_all.append(quality_metrics["avg_jitter_ms"])
+                if quality_metrics.get("avg_latency_ms") is not None:
+                    avg_latency_all.append(quality_metrics["avg_latency_ms"])
+                if quality_metrics.get("packet_loss_pct") is not None:
+                    avg_loss_all.append(quality_metrics["packet_loss_pct"])
+        
+        if total_quality > 0:
+            q_col1, q_col2, q_col3, q_col4 = st.columns(4)
+            q_col1.metric("BOM", quality_bom, delta=f"{quality_bom/total_quality*100:.0f}%")
+            q_col2.metric("MÉDIO", quality_medio, delta=f"{quality_medio/total_quality*100:.0f}%")
+            q_col3.metric("RUIM", quality_ruim, delta=f"{quality_ruim/total_quality*100:.0f}%")
+            
+            avg_jitter = round(sum(avg_jitter_all) / len(avg_jitter_all), 1) if avg_jitter_all else None
+            avg_latency = round(sum(avg_latency_all) / len(avg_latency_all), 1) if avg_latency_all else None
+            avg_loss = round(sum(avg_loss_all) / len(avg_loss_all), 2) if avg_loss_all else None
+            
+            q_col4.metric("Jitter Médio", f"{avg_jitter:.1f} ms" if avg_jitter is not None else "—")
+        
+        st.divider()
+        
+        # Cards por cliente (2 colunas)
+        cols_per_row = 2
+        for i in range(0, len(clients_data), cols_per_row):
             cols = st.columns(cols_per_row)
             for j, col in enumerate(cols):
                 idx = i + j
-                if idx < len(machines_data):
-                    m = machines_data[idx]
+                if idx < len(clients_data):
+                    c = clients_data[idx]
                     with col:
-                        render_machine_card(
-                            machine=m["machine"],
-                            client=m["client"],
-                            latest_measurement=m["latest_measurement"],
-                            latest_traceroute=m["latest_traceroute"],
-                            latest_alert_event=m["latest_alert_event"],
-                            on_click=on_machine_click
+                        render_client_card(
+                            client=c["client"],
+                            local_machines=c["local_machines"],
+                            internet_machine=c["internet_machine"],
+                            on_click=on_client_click
                         )
     
     except RepositoryError as e:
@@ -284,243 +449,510 @@ def render_cards_view(repo: FrontendRepository, client_id: Optional[str]) -> Non
         st.error(f"Erro inesperado: {e}")
 
 
-def render_detail_view(repo: FrontendRepository) -> None:
-    """Renderiza a view de detalhes de uma máquina."""
-    machine_id = st.session_state.selected_machine_id
-    if not machine_id:
+def render_client_detail(repo: FrontendRepository, client_id: str) -> None:
+    """Renderiza a view de detalhes de um cliente (todas as suas máquinas)."""
+    if not client_id:
         st.session_state.view_mode = "cards"
+        st.session_state.selected_client_id = None
         st.rerun()
         return
     
     try:
-        machine = repo.get_machine(machine_id)
-        if not machine:
-            st.error("Máquina não encontrada.")
+        client = repo.get_client(client_id)
+        if not client:
+            st.error("Cliente não encontrado.")
             if st.button("← Voltar"):
                 st.session_state.view_mode = "cards"
-                st.session_state.selected_machine_id = None
+                st.session_state.selected_client_id = None
                 st.rerun()
             return
         
-        client = repo.get_client(machine.client_id)
+        # Obter todas as máquinas do cliente (incluindo INTERNET-CHECK)
+        all_machines = repo.list_machines(client_id=client_id, active_only=True)
+        internet_machine = next((m for m in all_machines if m.tag == "INTERNET-CHECK"), None)
+        local_machines = [m for m in all_machines if m.tag != "INTERNET-CHECK"]
         
         # Header com botão voltar
         col1, col2 = st.columns([6, 1])
         with col1:
-            st.markdown(f'<h1 class="main-header">{machine.tag}</h1>', unsafe_allow_html=True)
-            st.markdown(f'<p class="sub-header">Cliente: {client.name if client else "Desconhecido"} • IP: {machine.ip} • Frequência: {machine.frequency_seconds}s</p>', unsafe_allow_html=True)
+            st.html(f'<h1 class="main-header">{client.name}</h1>')
+            st.html(f'<p class="sub-header">Total de máquinas: {len(local_machines)} local(is) + {1 if internet_machine else 0} internet check</p>')
         with col2:
             if st.button("← Voltar", use_container_width=True):
                 st.session_state.view_mode = "cards"
-                st.session_state.selected_machine_id = None
+                st.session_state.selected_client_id = None
                 st.rerun()
-        
-        # Última medição (cards de status)
-        latest = repo.get_latest_measurement(machine_id)
-        
-        if latest:
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                latency_ms = latest.get("latency_ms")
-                latency_color = "#28a745" if latency_ms and latency_ms < 50 else "#ffc107" if latency_ms and latency_ms < 150 else "#dc3545" if latency_ms else "#6c757d"
-                st.markdown(f"""
-                <div class="metric-card">
-                    <div style="font-size: 0.8rem; color: #666; text-transform: uppercase;">Latência Atual</div>
-                    <div style="font-size: 2rem; font-weight: 700; color: {latency_color};">
-                        {f'{latency_ms:.1f} ms' if latency_ms else '—'}
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-            with col2:
-                loss_pct = latest.get("packet_loss_percent", 0)
-                loss_color = "#28a745" if loss_pct == 0 else "#ffc107" if loss_pct < 5 else "#dc3545"
-                st.markdown(f"""
-                <div class="metric-card">
-                    <div style="font-size: 0.8rem; color: #666; text-transform: uppercase;">Perda de Pacotes</div>
-                    <div style="font-size: 2rem; font-weight: 700; color: {loss_color};">
-                        {loss_pct:.1f}%
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-            with col3:
-                jitter_ms = latest.get("jitter_ms")
-                jitter_color = "#28a745" if jitter_ms and jitter_ms < 10 else "#ffc107" if jitter_ms and jitter_ms < 30 else "#dc3545" if jitter_ms else "#6c757d"
-                st.markdown(f"""
-                <div class="metric-card">
-                    <div style="font-size: 0.8rem; color: #666; text-transform: uppercase;">Jitter</div>
-                    <div style="font-size: 2rem; font-weight: 700; color: {jitter_color};">
-                        {f'{jitter_ms:.1f} ms' if jitter_ms else '—'}
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-            with col4:
-                status_html = render_status_badge(latest.get("status", ""))
-                st.markdown(f"""
-                <div class="metric-card">
-                    <div style="font-size: 0.8rem; color: #666; text-transform: uppercase;">Status</div>
-                    <div style="font-size: 1.5rem;">{status_html}</div>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            st.caption(f"Última medição: {pd.to_datetime(latest.get('measured_at', '')).tz_convert('America/Sao_Paulo').strftime('%Y-%m-%d %H:%M:%S') if latest.get('measured_at') else '—'}")
-        else:
-            st.warning("Nenhuma medição registrada para esta máquina.")
-        
-        # ========== GRÁFICO DE EVOLUÇÃO DA ACURÁCIA DA IA ==========
-        st.subheader("Evolução da Acurácia da IA")
-        try:
-            from supabase import create_client
-            from config import settings as fe_settings
-            sb = create_client(fe_settings.SUPABASE_URL, fe_settings.SUPABASE_KEY)
-            feedbacks = sb.table("machine_feedback").select("*").eq("machine_id", machine_id).order("created_at", desc=True).limit(100).execute().data or []
-            
-            if feedbacks:
-                total = len(feedbacks)
-                score = sum(1.0 if f["label"] == "bom" else 0.5 if f["label"] == "medio" else 0.0 for f in feedbacks)
-                accuracy = round(score / total * 100, 1)
-                
-                acc_color = "#28a745" if accuracy >= 80 else "#ffc107" if accuracy >= 50 else "#dc3545"
-                st.markdown(
-                    f'<div style="background:{acc_color}20;border:1px solid {acc_color};border-radius:6px;padding:12px;margin:8px 0;">'
-                    f'<strong style="color:{acc_color};">Acurácia: {accuracy}%</strong> '
-                    f'<span style="color:#888;">({len(feedbacks)} feedbacks)</span>'
-                    f'</div>',
-                    unsafe_allow_html=True
-                )
-                
-                # Gráfico de evolução da acurácia
-                feedbacks_sorted = sorted(feedbacks, key=lambda x: x["created_at"])
-                acc_history = []
-                cumulative_score = 0
-                for i, fb in enumerate(feedbacks_sorted, 1):
-                    val = 1.0 if fb["label"] == "bom" else 0.5 if fb["label"] == "medio" else 0.0
-                    cumulative_score += val
-                    acc_history.append({
-                        "feedback": i,
-                        "acuracia": round(cumulative_score / i * 100, 1),
-                        "data": fb["created_at"][:10]
-                    })
-                
-                df_acc = pd.DataFrame(acc_history)
-                
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=df_acc["feedback"],
-                    y=df_acc["acuracia"],
-                    mode='lines+markers',
-                    name='Acurácia',
-                    line=dict(color='#1f77b4', width=2),
-                    marker=dict(size=6),
-                    hovertemplate='Feedback %{x}<br>Acurácia: %{y}%<extra></extra>'
-                ))
-                fig.add_hline(y=80, line_dash="dash", line_color="green", annotation_text="Meta 80%")
-                fig.update_layout(
-                    title="Evolução da Acurácia",
-                    xaxis_title="Nº Feedback",
-                    yaxis_title="Acurácia (%)",
-                    yaxis=dict(range=[0, 105]),
-                    height=300,
-                    margin=dict(l=20, r=20, t=40, b=20),
-                    template="plotly_white"
-                )
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("Sem feedbacks suficientes para mostrar evolução da acurácia")
-        except Exception as e:
-            st.caption(f"Dados de acurácia indisponíveis: {e}")
         
         st.divider()
         
-        # Abas: Métricas | Traceroute | Alertas
-        tab_metrics, tab_traceroute, tab_alerts = st.tabs(["Métricas", "Traceroute", "Alertas"])
+        # ===== MÉTRICAS GERAIS DO CLIENTE =====
+        col1, col2, col3, col4 = st.columns(4)
         
-        with tab_metrics:
-            # Seletor de período histórico
-            st.subheader("Histórico de Métricas")
-            
-            # Presets de período
-            period_presets = {
-                "Últimas 24h": 24,
-                "Últimos 7 dias": 168,
-                "Últimos 30 dias": 720,
-                "Últimos 90 dias": 2160,
-                "Últimos 6 meses": 4320,
-            }
-            
-            col_preset, col_custom = st.columns([2, 2])
-            
-            with col_preset:
-                preset = st.selectbox(
-                    "Período rápido",
-                    options=list(period_presets.keys()),
-                    index=1,  # 7 dias padrão
-                    key=f"preset_{machine_id}"
-                )
-                hours = period_presets[preset]
-            
-            with col_custom:
-                # Date picker para período customizado
-                from datetime import datetime, timedelta
-                default_start = datetime.now() - timedelta(hours=hours)
-                date_range = st.date_input(
-                    "Período personalizado",
-                    value=(default_start.date(), datetime.now().date()),
-                    max_value=datetime.now().date(),
-                    key=f"date_range_{machine_id}"
-                )
+        # Total de máquinas
+        col1.metric("Total de Máquinas", len(local_machines) + (1 if internet_machine else 0))
+        
+        # Status geral (based on local machines only, as per spec)
+        ok_count = sum(1 for m in local_machines if repo.get_latest_measurement(m.id) and repo.get_latest_measurement(m.id).get("status") == "ok")
+        warning_count = sum(1 for m in local_machines if repo.get_latest_measurement(m.id) and repo.get_latest_measurement(m.id).get("status") == "partial")
+        critical_count = sum(1 for m in local_machines if repo.get_latest_measurement(m.id) and repo.get_latest_measurement(m.id).get("status") == "unreachable")
+        no_data_count = len(local_machines) - ok_count - warning_count - critical_count
+        
+        col2.metric("OK", ok_count)
+        col3.metric("Parcial", warning_count)
+        col4.metric("Critico", critical_count)
+        
+        # ===== TABELA DETALHADA DE MÁQUINAS LOCAIS =====
+        st.subheader("Máquinas Locais")
+        
+        if local_machines:
+            for machine in local_machines:
+                latest = repo.get_latest_measurement(machine.id)
+                status = latest.get("status", "") if latest else ""
+                latency = latest.get("latency_ms") if latest else None
+                loss = latest.get("packet_loss_percent", 0) if latest else 0
                 
-                # Se selecionou data customizada, usa ela
-                if isinstance(date_range, tuple) and len(date_range) == 2:
-                    start_date, end_date = date_range
-                    start_dt = datetime.combine(start_date, datetime.min.time())
-                    end_dt = datetime.combine(end_date, datetime.max.time())
-                    # Converte para horas
-                    delta = end_dt - start_dt
-                    hours = max(1, int(delta.total_seconds() / 3600))
+                col1, col2, col3, col4, col5 = st.columns([3, 1, 1, 1, 1])
+                
+                with col1:
+                    st.markdown(f"**{machine.tag}** • {machine.ip}")
+                
+                with col2:
+                    # Status badge
+                    status_color = "#28a745" if status == "ok" else "#ffc107" if status == "partial" else "#dc3545" if status == "unreachable" else "#6c757d"
+                    status_icon = "🟢" if status == "ok" else "🟡" if status == "partial" else "🔴" if status == "unreachable" else "⚪"
+                    st.html(f'<span style="background:{status_color};color:white;padding:2px 8px;border-radius:10px;font-size:0.75rem;">{status_icon} {status.upper()}</span>')
+                
+                with col3:
+                    st.metric("Latência", f"{latency:.1f} ms" if latency is not None else "—")
+                
+                with col4:
+                    st.metric("Perda", f"{loss:.1f}%")
+                
+                with col5:
+                    st.button(f"Ver detalhes", key=f"detail_{machine.id}", on_click=lambda mid=machine.id: on_machine_click(mid), use_container_width=True)
+                
+                st.divider()
+        else:
+            st.info("Nenhuma máquina local configurada para este cliente.")
+        
+        # ===== INFORMAÇÕES DA INTERNET =====
+        if internet_machine:
+            st.subheader("Internet Check")
+            latest = repo.get_latest_measurement(internet_machine.id)
+            status = latest.get("status", "") if latest else ""
+            latency = latest.get("latency_ms") if latest else None
+            loss = latest.get("packet_loss_percent", 0) if latest else 0
+            jitter = latest.get("jitter_ms") if latest else None
+            measured_at = latest.get("measured_at", "") if latest else ""
             
-            # Busca medições
-            measurements = repo.get_measurements(machine_id, hours=hours, limit=settings.MAX_MEASUREMENTS)
-            # Use machine_id and current timestamp as key to force re-render when switching cards
-            from datetime import datetime
-            key_suffix = f"{machine_id}_{int(datetime.now().timestamp())}"
-            render_metrics_charts(measurements, machine.tag, key_suffix)
+            col1, col2, col3, col4 = st.columns(4)
             
-            # Tabela de medições recentes
-            with st.expander("Ver medições recentes (tabela)"):
-                if measurements:
-                    df_data = []
-                    for m in reversed(measurements[-50:]):
-                        dt = pd.to_datetime(m.get("measured_at", ""))
-                        hora_sp = dt.tz_convert("America/Sao_Paulo").strftime("%Y-%m-%d %H:%M:%S") if dt.tz is not None else m.get("measured_at", "")[:19].replace('T', ' ')
-                        df_data.append({
-                            "Hora (SP)": hora_sp,
-                            "Latência (ms)": f"{m.get('latency_ms'):.1f}" if m.get('latency_ms') else "—",
-                            "Jitter (ms)": f"{m.get('jitter_ms'):.1f}" if m.get('jitter_ms') else "—",
-                            "Perda (%)": f"{m.get('packet_loss_percent', 0):.1f}",
-                            "Status": m.get("status", ""),
-                            "Enviados/Recebidos": f"{m.get('packets_received', 0)}/{m.get('packets_sent', 0)}",
-                        })
-                    st.dataframe(df_data, width="stretch", hide_index=True)
+            with col1:
+                status_color = "#28a745" if status == "ok" else "#ffc107" if status == "partial" else "#dc3545" if status == "unreachable" else "#6c757d"
+                status_icon = "🟢" if status == "ok" else "🟡" if status == "partial" else "🔴" if status == "unreachable" else "⚪"
+                st.markdown(f"**INTERNET-CHECK** {status_icon}")
+                st.html(f'<span style="background:{status_color};color:white;padding:2px 8px;border-radius:10px;font-size:0.75rem;">{status.upper()}</span>')
+            
+            with col2:
+                st.metric("Latência", f"{latency:.1f} ms" if latency is not None else "—")
+                st.metric("Jitter", f"{jitter:.1f} ms" if jitter is not None else "—")
+            
+            with col3:
+                st.metric("Perda", f"{loss:.1f}%")
+            
+            with col4:
+                measured_dt = pd.to_datetime(measured_at) if measured_at else None
+                if measured_dt:
+                    measured_dt_sp = measured_dt.tz_convert("America/Sao_Paulo")
+                    measured_str = measured_dt_sp.strftime("%Y-%m-%d %H:%M:%S")
                 else:
-                    st.info("Nenhuma medição no período.")
+                    measured_str = "—"
+                st.metric("Última Medição", measured_str)
+            
+            # Botão para ver detalhes do internet check
+            st.button(f"Ver detalhes", key=f"detail_{internet_machine.id}", on_click=lambda mid=internet_machine.id: on_machine_click(mid), use_container_width=True, type="secondary")
         
-        with tab_traceroute:
-            traceroute_exists = repo.get_latest_traceroute(machine_id) is not None
-            if not traceroute_exists:
-                st.info(f"Traceroute para {machine.tag} ({machine.ip}). Sera executado automaticamente quando a qualidade da conexao mudar de OK.")
-                if st.button("Executar Traceroute Agora", use_container_width=True):
-                    if run_traceroute_cli(machine_id):
-                        st.rerun()
+        st.divider()
+        
+        # ===== EVENTOS DE STATUS DO DISPOSITIVO =====
+        st.subheader("Eventos de Conectividade")
+        try:
+            status_events = repo.get_device_status_events(client_id=client_id, hours=24, limit=50)
+            if status_events:
+                for event in reversed(status_events):
+                    event_type = event.get("event_type", "")
+                    machine_id = event.get("machine_id", "")
+                    loss = event.get("packet_loss_percent")
+                    measured = event.get("measured_at", "")[:19].replace("T", " ")
+                    prev = event.get("previous_status", "")
+                    
+                    if event_type == "unreachable":
+                        icon = "🔴"
+                        color = "#dc3545"
+                        label = "INACESSÍVEL"
+                    elif event_type == "reachable":
+                        icon = "🟢"
+                        color = "#28a745"
+                        label = "RECUPERADO"
+                    else:
+                        icon = "🟡"
+                        color = "#ffc107"
+                        label = "PERDA DE PACOTES"
+                    
+                    st.html(
+                        f'<span style="color:{color};font-size:0.8rem;">'
+                        f'{measured} | {icon} <strong>{label}</strong> '
+                        f'(loss: {loss:.1f}%'
+                        + (f', anterior: {prev})' if prev else ')')
+                        + '</span>'
+                    )
             else:
-                render_traceroute_tab(repo, machine_id, machine.tag)
+                st.caption("Nenhum evento de conectividade nas últimas 24h")
+        except Exception:
+            st.caption("Dados de conectividade indisponíveis")
         
-        with tab_alerts:
-            render_alert_tab(repo, machine_id, machine.tag)
+        st.divider()
+        
+        # ===== GRÁFICOS HISTÓRICOS =====
+        st.subheader("Gráficos Históricos")
+        
+        # Gráfico da primeira máquina local (latência + jitter + perda)
+        if local_machines:
+            first_machine = local_machines[0]
+            measurements = _cached_measurements(first_machine.id, hours=24, limit=settings.MAX_MEASUREMENTS)
+            if measurements:
+                render_metrics_charts(measurements, first_machine.tag, f"client_{first_machine.id}")
+            else:
+                st.info(f"Sem medições para {first_machine.tag}")
+        
+        # Gráfico da internet (se houver)
+        if internet_machine:
+            st.subheader("Internet Check - Histórico")
+            measurements = _cached_measurements(internet_machine.id, hours=24, limit=settings.MAX_MEASUREMENTS)
+            if measurements:
+                render_metrics_charts(measurements, internet_machine.tag, f"client_internet_{internet_machine.id}")
+            else:
+                st.info("Sem medições para internet check")
+        
+        st.divider()
+        
+        # ===== GRÁFICO DE EVOLUÇÃO DOS ALERTAS =====
+        st.subheader("Alertas Ativos")
+        
+        # Busca alertas ativos de todas as máquinas do cliente
+        alert_count = 0
+        for machine in local_machines:
+            if internet_machine:
+                alert_count += len(repo.get_alert_events(machine.id))
+                alert_count += len(repo.get_alert_events(internet_machine.id))
+            else:
+                alert_count += len(repo.get_alert_events(machine.id))
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Alertas Ativos", alert_count)
+        
+        # Lista de alertas ativos (se houver)
+        if alert_count > 0:
+            with st.expander("Ver detalhes dos alertas"):
+                for machine in local_machines:
+                    if internet_machine:
+                        events = repo.get_alert_events(machine.id) + repo.get_alert_events(internet_machine.id)
+                    else:
+                        events = repo.get_alert_events(machine.id)
+                    
+                    for event in events:
+                        if event.get("status") in ["firing", "acknowledged"]:
+                            severity = event.get("severity", "warning")
+                            icon = "🔴" if severity == "critical" else "🟡" if severity == "warning" else "🟠"
+                            st.markdown(f"{icon} {machine.tag} - {event.get('metric', '')}: {event.get('metric_value', 0)}")
+        
+# ===== PREVISÃO 4H (LSTM) =====
+        st.divider()
+        st.subheader("Previsão de Qualidade (4h)")
+        
+        target_for_prediction = internet_machine if internet_machine else (local_machines[0] if local_machines else None)
+        
+        if target_for_prediction:
+            # Botão Train Model
+            col_train, col_pred = st.columns([1, 3])
+            with col_train:
+                if st.button("🚀 Treinar Modelo", key=f"train_{target_for_prediction.id}", use_container_width=True):
+                    try:
+                        project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                        venv_python = os.path.join(project_dir, "venv", "Scripts", "python.exe")
+                        if not os.path.exists(venv_python):
+                            venv_python = "python"
+                        with st.spinner(f"Treinando modelo para {target_for_prediction.tag}..."):
+                            result = subprocess.run(
+                                [venv_python, "-m", "supadiag", "ml-train", "--machine-id", target_for_prediction.id, "--epochs", "50"],
+                                capture_output=True,
+                                text=True,
+                                timeout=600,
+                            )
+                        if result.returncode == 0:
+                            st.success("Modelo treinado com sucesso!")
+                            if result.stdout:
+                                st.caption(result.stdout[-500:])
+                        else:
+                            st.error(f"Erro no treino: {result.stderr}")
+                    except subprocess.TimeoutExpired:
+                        st.error("Treino demorou muito. Tente novamente.")
+                    except FileNotFoundError:
+                        st.error("Python não encontrado.")
+                    except Exception as e:
+                        st.error(f"Erro ao treinar: {e}")
+            
+            with col_pred:
+                try:
+                    import torch
+                    import numpy as np
+                    import plotly.graph_objects as go
+                    import sys
+                    import os
+                    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                    from src.supadiag.ml_predictor import NetworkQualityPredictor
+                    from src.supadiag.config import load_settings
+                    
+                    backend_settings = load_settings()
+                    repo_nq = get_repository()
+                    predictor = NetworkQualityPredictor(backend_settings, repo_nq)
+                    
+                    measurements = _cached_measurements(target_for_prediction.id, hours=12, limit=100)
+                    
+                    reachable_count = len(measurements) if measurements else 0
+                    
+                    if reachable_count == 0:
+                        st.warning(
+                            "⚠️ Sem medições alcançáveis para previsão. "
+                            "O dispositivo está inacessível ou sem dados recentes. "
+                            "Verifique os eventos de conectividade abaixo."
+                        )
+                        try:
+                            status_events = repo.get_device_status_events(
+                                machine_id=target_for_prediction.id, hours=24, limit=10
+                            )
+                            if status_events:
+                                with st.expander("Últimos eventos de conectividade"):
+                                    for event in reversed(status_events):
+                                        etype = event.get("event_type", "")
+                                        loss = event.get("packet_loss_percent")
+                                        measured = event.get("measured_at", "")[:16].replace("T", " ")
+                                        icon = "🔴" if etype == "unreachable" else "🟢" if etype == "reachable" else "🟡"
+                                        st.html(f"{measured} {icon} {etype} (loss: {loss:.1f}%)")
+                        except Exception:
+                            pass
+                    elif reachable_count < 12:
+                        st.info(
+                            f"Dados insuficientes para previsão: {reachable_count}/12 medições alcançáveis. "
+                            f"Aguarde mais medições ou verifique a conectividade."
+                        )
+                    else:
+                        prediction = predictor.predict_next_4h(target_for_prediction.id, measurements)
+                    
+                    # Prepara dados para gráfico
+                    historical_timestamps = []
+                    historical_quality = []
+                    historical_colors = []
+                    
+                    for m in measurements[-12:]:
+                        ts = pd.to_datetime(m.get("measured_at", ""))
+                        if ts.tz is not None:
+                            ts = ts.tz_convert("America/Sao_Paulo")
+                        historical_timestamps.append(ts)
+                        
+                        latency = m.get("latency_ms") or 0
+                        jitter = m.get("jitter_ms") or 0
+                        loss = m.get("packet_loss_percent") or 0
+                        
+                        if jitter < 20 and latency < 100 and loss < 0.5:
+                            historical_quality.append(3)
+                            historical_colors.append("#28a745")
+                        elif jitter < 30 and latency < 150 and loss < 1:
+                            historical_quality.append(2)
+                            historical_colors.append("#ffc107")
+                        else:
+                            historical_quality.append(1)
+                            historical_colors.append("#dc3545")
+                    
+                    last_ts = historical_timestamps[-1]
+                    forecast_timestamps = [last_ts + timedelta(hours=h) for h in range(1, 5)]
+                    forecast_quality = prediction.forecast_classes
+                    forecast_colors = ["#28a745" if c == 0 else "#ffc107" if c == 1 else "#dc3545" for c in forecast_quality]
+                    
+                    fig = go.Figure()
+                    
+                    # Linha de histórico com pontos coloridos por qualidade
+                    for i, (ts, q, color) in enumerate(zip(historical_timestamps, historical_quality, historical_colors)):
+                        fig.add_trace(go.Scatter(
+                            x=[ts],
+                            y=[q],
+                            mode='markers',
+                            name='Histórico' if i == 0 else '',
+                            marker=dict(size=8, color=color, line=dict(width=1, color='white')),
+                            showlegend=(i == 0),
+                            hovertemplate=f"<b>Histórico</b><br>Horário: %{{x|%H:%M}}<br>Qualidade: %{{y}}<extra></extra>"
+                        ))
+                    
+                    # Linha conectando histórico
+                    fig.add_trace(go.Scatter(
+                        x=historical_timestamps,
+                        y=historical_quality,
+                        mode='lines',
+                        name='Tendência',
+                        line=dict(color='#1f77b4', width=2, dash='dot'),
+                        hoverinfo='skip'
+                    ))
+                    
+                    # Previsão 4h
+                    for i, (ts, q, color, conf) in enumerate(zip(forecast_timestamps, forecast_quality, forecast_colors, prediction.forecast_confidences)):
+                        fig.add_trace(go.Scatter(
+                            x=[ts],
+                            y=[q],
+                            mode='markers',
+                            name='Previsão' if i == 0 else '',
+                            marker=dict(
+                                size=16,
+                                color=color,
+                                symbol='diamond',
+                                line=dict(width=2, color='white')
+                            ),
+                            showlegend=(i == 0),
+                            hovertemplate=f"<b>Previsão {i+1}h</b><br>Horário: %{{x|%H:%M}}<br>Qualidade: %{{y}}<br>Confiança: {conf:.1%}<extra></extra>"
+                        ))
+                    
+                    # Linha de confiança
+                    fig.add_trace(go.Scatter(
+                        x=forecast_timestamps,
+                        y=forecast_quality,
+                        mode='lines',
+                        name='Tendência previsão',
+                        line=dict(color='#ff7f0e', width=2, dash='dash'),
+                        hoverinfo='skip'
+                    ))
+                    
+                    fig.update_layout(
+                        title=f"Previsão de Qualidade - {target_for_prediction.tag}",
+                        xaxis_title="Horário (São Paulo)",
+                        yaxis_title="Qualidade",
+                        yaxis=dict(
+                            tickmode='array',
+                            tickvals=[1, 2, 3],
+                            ticktext=['RUIM', 'MÉDIO', 'BOM'],
+                            range=[0, 4]
+                        ),
+                        height=450,
+                        template="plotly_white",
+                        hovermode="x unified",
+                        legend=dict(
+                            orientation="h",
+                            yanchor="bottom",
+                            y=1.02,
+                            xanchor="right",
+                            x=1
+                        ),
+                        annotations=[
+                            dict(
+                                x=0.02,
+                                y=0.98,
+                                xref="paper",
+                                yref="paper",
+                                text="<b>Legenda:</b><br>🟢 BOM<br>🟡 MÉDIO<br>🔴 RUIM",
+                                showarrow=False,
+                                font=dict(size=11),
+                                align="left",
+                                bgcolor="rgba(255,255,255,0.8)",
+                                bordercolor="#ccc",
+                                borderwidth=1
+                            )
+                        ]
+                    )
+                    st.plotly_chart(fig, use_container_width=True, key="forecast_chart")
+                    
+                    st.caption(f"Previsão gerada em {prediction.predicted_at[:19].replace('T', ' ')} | Confiança: {prediction.confidence:.1%}")
+                except Exception as e:
+                    st.error(f"Erro ao gerar previsão: {e}")
+        
+        # ===== FEEDBACK DO USUÁRIO =====
+        st.divider()
+        st.subheader("Feedback da Qualidade")
+        st.caption("Ajude a IA a aprender: classifique a qualidade atual da conexão.")
+        
+        target_machine_id = internet_machine.id if internet_machine else local_machines[0].id
+
+        col_fb1, col_fb2, col_fb3 = st.columns(3)
+        
+        with col_fb1:
+            if st.button("🟢 Bom", key="feedback_bom", use_container_width=True):
+                try:
+                    import sys
+                    import os
+                    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                    from src.supadiag.config import load_settings
+                    from src.supadiag.network_quality import NetworkQualityAnalyzer
+                    backend_settings = load_settings()
+                    repo_nq = get_repository()
+                    analyzer = NetworkQualityAnalyzer(backend_settings, repo_nq)
+                    metrics = repo_nq.get_network_quality_metrics(target_machine_id, hours=1)
+                    analyzer.save_user_feedback(
+                        machine_id=target_machine_id,
+                        label="bom",
+                        avg_latency_ms=metrics.get("avg_latency"),
+                        avg_jitter_ms=metrics.get("avg_jitter"),
+                        packet_loss_pct=metrics.get("packet_loss_pct", 0.0),
+                    )
+                    st.success("Feedback registrado: Bom")
+                except Exception as e:
+                    st.error(f"Erro ao salvar feedback: {e}")
+        
+        with col_fb2:
+            if st.button("🟡 Médio", key="feedback_medio", use_container_width=True):
+                try:
+                    import sys
+                    import os
+                    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                    from src.supadiag.config import load_settings
+                    from src.supadiag.network_quality import NetworkQualityAnalyzer
+                    backend_settings = load_settings()
+                    repo_nq = get_repository()
+                    analyzer = NetworkQualityAnalyzer(backend_settings, repo_nq)
+                    metrics = repo_nq.get_network_quality_metrics(target_machine_id, hours=1)
+                    analyzer.save_user_feedback(
+                        machine_id=target_machine_id,
+                        label="medio",
+                        avg_latency_ms=metrics.get("avg_latency"),
+                        avg_jitter_ms=metrics.get("avg_jitter"),
+                        packet_loss_pct=metrics.get("packet_loss_pct", 0.0),
+                    )
+                    st.success("Feedback registrado: Médio")
+                except Exception as e:
+                    st.error(f"Erro ao salvar feedback: {e}")
+        
+        with col_fb3:
+            if st.button("🔴 Ruim", key="feedback_ruim", use_container_width=True):
+                try:
+                    import sys
+                    import os
+                    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                    from src.supadiag.config import load_settings
+                    from src.supadiag.network_quality import NetworkQualityAnalyzer
+                    backend_settings = load_settings()
+                    repo_nq = get_repository()
+                    analyzer = NetworkQualityAnalyzer(backend_settings, repo_nq)
+                    metrics = repo_nq.get_network_quality_metrics(target_machine_id, hours=1)
+                    analyzer.save_user_feedback(
+                        machine_id=target_machine_id,
+                        label="ruim",
+                        avg_latency_ms=metrics.get("avg_latency"),
+                        avg_jitter_ms=metrics.get("avg_jitter"),
+                        packet_loss_pct=metrics.get("packet_loss_pct", 0.0),
+                    )
+                    st.success("Feedback registrado: Ruim")
+                except Exception as e:
+                    st.error(f"Erro ao salvar feedback: {e}")
     
-    except RepositoryError as e:
-        st.error(f"Erro ao conectar ao Cloud: {e}")
     except Exception as e:
-        st.error(f"Erro inesperado: {e}")
+        st.error(f"Erro ao carregar detalhes do cliente: {e}")
 
 
 def main() -> None:
@@ -551,7 +983,7 @@ def main() -> None:
         
         # Estatísticas gerais de IA
         try:
-            all_feedbacks = repo.list_machine_feedback(limit=1000)
+            all_feedbacks = _cached_machine_feedback(1000)
             if all_feedbacks:
                 total_fb = len(all_feedbacks)
                 bom = sum(1 for f in all_feedbacks if f.get("label") == "bom")
@@ -575,27 +1007,19 @@ def main() -> None:
         st.divider()
         st.markdown("### Eventos IA")
         try:
-            # Busca feedbacks recentes de todas as máquinas
-            from supabase import create_client
-            from config import settings as fe_settings
-            sb = create_client(fe_settings.SUPABASE_URL, fe_settings.SUPABASE_KEY)
-            recent_feedbacks = sb.table("machine_feedback").select("machine_id, label, packet_loss_percent, latency_ms, jitter_ms, created_at").order("created_at", desc=True).limit(15).execute().data or []
-            
-            if recent_feedbacks:
-                for fb in recent_feedbacks:
-                    label = fb.get("label", "")
-                    loss = fb.get("packet_loss_percent", 0)
-                    lat = fb.get("latency_ms")
-                    jitter = fb.get("jitter_ms")
-                    ts = fb.get("created_at", "")[:16].replace("T", " ")
-                    
+            ai_events = _cached_ai_feedbacks()
+            if ai_events:
+                for event in reversed(ai_events[:15]):
+                    ts = event.get("created_at", "")[:16].replace("T", " ")
+                    label = event.get("label", "")
+                    loss = event.get("packet_loss_percent", 0)
+                    lat = event.get("latency_ms")
+                    jitter = event.get("jitter_ms")
                     label_color = "#28a745" if label == "bom" else "#ffc107" if label == "medio" else "#dc3545"
-                    
-                    st.caption(
+                    st.html(
                         f"{ts} | "
                         f'<span style="color:{label_color};">{label.upper()}</span> | '
-                        f"Loss: {loss}% | Lat: {lat}ms | Jitter: {jitter}ms",
-                        unsafe_allow_html=True
+                        f"Loss: {loss}% | Lat: {lat}ms | Jitter: {jitter}ms"
                     )
             else:
                 st.caption("Nenhum evento de treinamento registrado")
@@ -607,31 +1031,12 @@ def main() -> None:
         st.markdown("### Alertas Ativos")
         
         try:
-            active_alerts = repo.list_alert_rules()
-            if active_alerts:
-                for rule in active_alerts[:5]:
-                    machine_tag = rule.get("machine_tag", "")
-                    machine_id = rule.get("machine_id", "")
-                    if machine_id:
-                        machine = repo.get_machine(machine_id)
-                        machine_tag = machine.tag if machine else machine_id[:8]
-                    
-                    event = repo.get_active_alert_event(rule.get("id", ""))
-                    if event:
-                        severity = event.get("severity", "warning")
-                        metric = event.get("metric", "")
-                        value = event.get("metric_value", 0)
-                        
-                        if severity == "critical" or event.get("status") == "firing":
-                            icon = "[CRITICAL]"
-                        elif severity == "warning":
-                            icon = "[WARNING]"
-                        else:
-                            icon = "[ACK]"
-                        
-                        st.markdown(f"{icon} **{machine_tag}** ({metric}: {value})")
+            alert_data = _cached_sidebar_alerts()
+            if alert_data:
+                for machine_tag, icon, metric, value, severity in alert_data:
+                    st.markdown(f"{icon} **{machine_tag}** ({metric}: {value})")
             else:
-                st.markdown("<span style='color: #28a745; font-size: 0.85rem;'>Nenhum alerta ativo</span>", unsafe_allow_html=True)
+                st.html("<span style='color: #28a745; font-size: 0.85rem;'>Nenhum alerta ativo</span>")
         except Exception:
             st.caption("Nenhum dado de alerta disponivel")
         
@@ -639,7 +1044,7 @@ def main() -> None:
         st.divider()
         st.markdown("### Ultimos Eventos")
         try:
-            events = get_sidebar_events(repo, 30)
+            events = _cached_sidebar_events()
             for event in reversed(events):
                 timestamp = format_event_time(event.get("timestamp", ""))
                 message = event.get("message", "")[:80]
@@ -651,7 +1056,7 @@ def main() -> None:
                     color = "#ffc107"
                 elif severity == "ok":
                     color = "#28a745"
-                st.markdown(f'<span style="color:{color};font-size:0.75rem;">{timestamp} | {message}</span>', unsafe_allow_html=True)
+                st.html(f'<span style="color:{color};font-size:0.75rem;">{timestamp} | {message}</span>')
         except Exception:
             st.caption("Nenhum evento disponível")
     
@@ -659,8 +1064,8 @@ def main() -> None:
     st_autorefresh(interval=30_000, key="auto_refresh")
     
     # Roteamento de views
-    if st.session_state.view_mode == "detail":
-        render_detail_view(repo)
+    if st.session_state.view_mode == "client_detail" and st.session_state.selected_client_id:
+        render_client_detail(repo, st.session_state.selected_client_id)
     else:
         render_cards_view(repo, filters["client_id"])
 

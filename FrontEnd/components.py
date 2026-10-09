@@ -6,12 +6,302 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List, Dict, Any
 
 from repository import Machine, Measurement, Client
 
 # Import settings for sidebar caption
 from config import settings
+
+
+def _reachability_label(machine_data: dict) -> tuple[str, str]:
+    """Retorna (icon, color) baseado no status de alcançabilidade."""
+    latest = machine_data.get("latest_measurement")
+    status_events = machine_data.get("status_events", [])
+    
+    if latest and latest.get("status") == "ok":
+        return "🟢", "#28a745"
+    elif latest and latest.get("status") == "partial":
+        return "🟡", "#ffc107"
+    elif latest and latest.get("status") in ("unreachable", "error"):
+        return "🔴", "#dc3545"
+    elif status_events:
+        last_event = status_events[0]
+        etype = last_event.get("event_type", "")
+        if etype == "unreachable":
+            return "🔴", "#dc3545"
+        elif etype == "packet_loss":
+            return "🟡", "#ffc107"
+        elif etype == "reachable":
+            return "🟢", "#28a745"
+    return "⚪", "#6c757d"
+
+
+def render_client_card(
+    client: Client,
+    local_machines: List[Dict[str, Any]],
+    internet_machine: Optional[Dict[str, Any]],
+    on_click: callable
+) -> None:
+    """
+    Renderiza um card consolidado por cliente com:
+    - Rede local (máquinas locais)
+    - Internet (INTERNET-CHECK)
+    
+    Args:
+        client: Objeto Client
+        local_machines: Lista de dicts com machine + latest_measurement
+        internet_machine: Dict com machine + latest_measurement do INTERNET-CHECK ou None
+        on_click: Callback ao clicar no card
+    """
+    # Calcula acurácia baseada nos feedbacks da internet
+    accuracy = 0
+    try:
+        from supabase import create_client
+        from config import settings as fe_settings
+        sb = create_client(fe_settings.SUPABASE_URL, fe_settings.SUPABASE_KEY)
+        target_id = internet_machine["machine"].id if internet_machine else (local_machines[0]["machine"].id if local_machines else None)
+        if target_id:
+            feedbacks = sb.table("machine_feedback").select("label").eq("machine_id", target_id).execute().data or []
+            if feedbacks:
+                total = len(feedbacks)
+                score = sum(1.0 if f["label"] == "bom" else 0.5 if f["label"] == "medio" else 0.0 for f in feedbacks)
+                accuracy = round(score / total * 100, 1)
+    except Exception:
+        accuracy = 0
+    
+    # Calcula status geral do cliente
+    total_machines = len(local_machines) + (1 if internet_machine else 0)
+    ok_count = 0
+    warning_count = 0
+    critical_count = 0
+    no_data_count = 0
+    
+    for m in local_machines:
+        if m["latest_measurement"]:
+            status = m["latest_measurement"].get("status", "")
+            if status == "ok":
+                ok_count += 1
+            elif status == "partial":
+                warning_count += 1
+            elif status == "unreachable":
+                critical_count += 1
+        else:
+            no_data_count += 1
+    
+    if internet_machine and internet_machine["latest_measurement"]:
+        status = internet_machine["latest_measurement"].get("status", "")
+        if status == "ok":
+            ok_count += 1
+        elif status == "partial":
+            warning_count += 1
+        elif status == "unreachable":
+            critical_count += 1
+    elif internet_machine:
+        no_data_count += 1
+    
+    # Status geral do card
+    if critical_count > 0:
+        overall_status_color = "#dc3545"
+        overall_status_icon = "🔴"
+        overall_status_text = "CRÍTICO"
+    elif warning_count > 0:
+        overall_status_color = "#ffc107"
+        overall_status_icon = "🟡"
+        overall_status_text = "ATENÇÃO"
+    elif ok_count > 0:
+        overall_status_color = "#28a745"
+        overall_status_icon = "🟢"
+        overall_status_text = "OK"
+    else:
+        overall_status_color = "#6c757d"
+        overall_status_icon = "⚪"
+        overall_status_text = "SEM DADOS"
+    
+    # Última medição de qualquer máquina
+    last_measured_at = "—"
+    all_measurements = [m["latest_measurement"] for m in local_machines if m["latest_measurement"]]
+    if internet_machine and internet_machine["latest_measurement"]:
+        all_measurements.append(internet_machine["latest_measurement"])
+    
+    if all_measurements:
+        latest_overall = max(all_measurements, key=lambda x: x.get("measured_at", ""))
+        try:
+            dt_utc = pd.to_datetime(latest_overall["measured_at"])
+            if dt_utc.tz is not None:
+                last_measured_at = dt_utc.tz_convert("America/Sao_Paulo").strftime("%Y-%m-%d %H:%M")
+            else:
+                last_measured_at = dt_utc.strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            last_measured_at = latest_overall.get("measured_at", "")[:16].replace('T', ' ')
+    
+    # Calcula latência média da rede local
+    local_latencies = [m["latest_measurement"].get("latency_ms") for m in local_machines if m["latest_measurement"] and m["latest_measurement"].get("latency_ms") is not None]
+    avg_local_latency = sum(local_latencies) / len(local_latencies) if local_latencies else None
+    
+    # Dados da internet
+    internet_latency = None
+    internet_loss = None
+    if internet_machine and internet_machine["latest_measurement"]:
+        internet_latency = internet_machine["latest_measurement"].get("latency_ms")
+        internet_loss = internet_machine["latest_measurement"].get("packet_loss_percent")
+    
+    internet_jitter = None
+    internet_min_latency = None
+    internet_max_latency = None
+    internet_availability = None
+    internet_status_color = "#6c757d"
+    internet_status_label = "Sem dados"
+    
+    if internet_machine:
+        quality = internet_machine.get("quality_metrics") or {}
+        internet_jitter = quality.get("avg_jitter")
+        internet_min_latency = quality.get("min_latency")
+        internet_max_latency = quality.get("max_latency")
+        internet_availability = quality.get("availability_pct")
+        status_detail = quality.get("status_detail") or "Sem dados"
+        internet_status_color = "#28a745" if status_detail == "Estável" else "#ffc107" if status_detail == "Instável" else "#dc3545" if status_detail == "Crítico" else "#6c757d"
+        internet_status_label = status_detail
+    
+    # Card HTML
+card_html = f"""
+<div style="
+    border: 1px solid #e0e0e0;
+    border-radius: 12px;
+    padding: 20px;
+    margin: 8px 0;
+    background: white;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    transition: box-shadow 0.2s, transform 0.2s;
+    cursor: pointer;
+" onmouseover="this.style.boxShadow='0 6px 20px rgba(0,0,0,0.12)'; this.style.transform='translateY(-2px)'"
+   onmouseout="this.style.boxShadow='0 2px 8px rgba(0,0,0,0.06)'; this.style.transform='translateY(0)'"
+   onclick="document.getElementById('hidden_btn_{client.id}').click();">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px;">
+            <div>
+                <h3 style="margin: 0 0 4px 0; color: #1f77b4; font-size: 1.3rem; font-weight: 700;">
+                    {client.name}
+                </h3>
+                <p style="margin: 0; color: #888; font-size: 0.85rem;">
+                    {len(local_machines)} máquina(s) local(is) • {1 if internet_machine else 0} internet check
+                </p>
+                <p style="margin: 4px 0 0 0; color: #888; font-size: 0.75rem;">
+                    Acurácia IA: <span style="color: {'#28a745' if accuracy >= 80 else '#ffc107' if accuracy >= 50 else '#dc3545'}; font-weight: 600;">{accuracy}%</span>
+                </p>
+            </div>
+            <div style="text-align: right;">
+                <span style="
+                    background: {overall_status_color};
+                    color: white;
+                    padding: 6px 14px;
+                    border-radius: 16px;
+                    font-size: 0.8rem;
+                    font-weight: 600;
+                    display: inline-block;
+                ">
+                    {overall_status_icon} {overall_status_text}
+                </span>
+            </div>
+        </div>
+        
+        <!-- Métricas da Rede Local -->
+        <div style="margin-bottom: 16px; padding: 12px; background: #f8f9fa; border-radius: 8px; border-left: 3px solid #1f77b4;">
+            <div style="font-size: 0.75rem; color: #666; text-transform: uppercase; font-weight: 600; margin-bottom: 8px; display: flex; gap: 8px; align-items: center;">
+                🖥️ Rede Local
+                <span style="background:#1f77b4;color:white;padding:1px 6px;border-radius:4px;font-size:0.65rem;">{len(local_machines)} ativa(s)</span>
+            </div>
+            <div style="display: flex; gap: 16px;">
+                <div style="flex: 1; text-align: center;">
+                    <div style="font-size: 1.5rem; font-weight: 700; color: {'#28a745' if avg_local_latency and avg_local_latency < 50 else '#ffc107' if avg_local_latency and avg_local_latency < 150 else '#dc3545' if avg_local_latency else '#6c757d'};">
+                        {f'{avg_local_latency:.1f} ms' if avg_local_latency is not None else '—'}
+                    </div>
+                    <div style="font-size: 0.7rem; color: #888; text-transform: uppercase;">Lat. Média</div>
+                </div>
+                <div style="flex: 1; text-align: center;">
+                    <div style="font-size: 1.5rem; font-weight: 700; color: {'#28a745' if ok_count > 0 and critical_count == 0 and warning_count == 0 else '#ffc107' if warning_count > 0 else '#dc3545' if critical_count > 0 else '#6c757d'};">
+                        {ok_count}/{total_machines}
+                    </div>
+                    <div style="font-size: 0.7rem; color: #888; text-transform: uppercase;">OK / Total</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Status de Alcançabilidade das Máquinas Locais -->
+        <div style="margin-bottom: 16px; padding: 12px; background: #f8f9fa; border-radius: 8px; border-left: 3px solid #6c757d;">
+            <div style="font-size: 0.75rem; color: #666; text-transform: uppercase; font-weight: 600; margin-bottom: 8px;">
+                📡 Alcançabilidade
+            </div>
+            {_render_reachability_list(local_machines)}
+        </div>
+        
+        <!-- Métricas da Internet -->
+        <div style="padding: 12px; background: #f8f9fa; border-radius: 8px; border-left: 3px solid #28a745;">
+            <div style="font-size: 0.75rem; color: #666; text-transform: uppercase; font-weight: 600; margin-bottom: 8px; display: flex; gap: 8px; align-items: center; justify-content: space-between;">
+                <span>🌐 Internet</span>
+                <span style="background:{internet_status_color};color:white;padding:1px 6px;border-radius:4px;font-size:0.65rem;">{internet_status_label}</span>
+            </div>
+            <div style="display: flex; gap: 16px;">
+                <div style="flex: 1; text-align: center;">
+                    <div style="font-size: 1.5rem; font-weight: 700; color: {'#28a745' if internet_latency and internet_latency < 50 else '#ffc107' if internet_latency and internet_latency < 150 else '#dc3545' if internet_latency else '#6c757d'};">
+                        {f'{internet_latency:.1f} ms' if internet_latency is not None else '—'}
+                    </div>
+                    <div style="font-size: 0.7rem; color: #888; text-transform: uppercase;">Latência</div>
+                </div>
+                <div style="flex: 1; text-align: center;">
+                    <div style="font-size: 1.5rem; font-weight: 700; color: {'#28a745' if internet_loss is not None and internet_loss == 0 else '#ffc107' if internet_loss is not None and internet_loss < 5 else '#dc3545' if internet_loss is not None else '#6c757d'};">
+                        {f'{internet_loss:.1f}%' if internet_loss is not None else '—'}
+                    </div>
+                    <div style="font-size: 0.7rem; color: #888; text-transform: uppercase;">Perda</div>
+                </div>
+                <div style="flex: 1; text-align: center;">
+                    <div style="font-size: 1.5rem; font-weight: 700; color: #1f77b4;">
+                        {f'{internet_jitter:.1f} ms' if internet_jitter is not None else '—'}
+                    </div>
+                    <div style="font-size: 0.7rem; color: #888; text-transform: uppercase;">Jitter</div>
+                </div>
+            </div>
+            <div style="display: flex; gap: 16px; margin-top: 10px;">
+                <div style="flex: 1; text-align: center;">
+                    <div style="font-size: 0.85rem; font-weight: 600; color: #333;">
+                        {internet_status_label}
+                    </div>
+                    <div style="font-size: 0.7rem; color: #888; text-transform: uppercase;">Status</div>
+                </div>
+                <div style="flex: 1; text-align: center;">
+                    <div style="font-size: 0.85rem; font-weight: 600; color: #333;">
+                        {f'{internet_min_latency:.1f} ms' if internet_min_latency is not None else '—'}
+                    </div>
+                    <div style="font-size: 0.7rem; color: #888; text-transform: uppercase;">Min</div>
+                </div>
+                <div style="flex: 1; text-align: center;">
+                    <div style="font-size: 0.85rem; font-weight: 600; color: #333;">
+                        {f'{internet_max_latency:.1f} ms' if internet_max_latency is not None else '—'}
+                    </div>
+                    <div style="font-size: 0.7rem; color: #888; text-transform: uppercase;">Max</div>
+                </div>
+                <div style="flex: 1; text-align: center;">
+                    <div style="font-size: 0.85rem; font-weight: 600; color: #333;">
+                        {f'{internet_availability:.1f}%' if internet_availability is not None else '—'}
+                    </div>
+                    <div style="font-size: 0.7rem; color: #888; text-transform: uppercase;">Disponibilidade</div>
+                </div>
+            </div>
+        </div>
+        
+        <div style="margin-top: 12px; text-align: center; color: #888; font-size: 0.75rem;">
+            Última atualização: {last_measured_at}
+        </div>
+    </div>
+    """
+
+    # Renderiza card + botão
+    container = st.container()
+    with container:
+        st.html(card_html)
+        
+        # Botão para ver detalhes do cliente
+        if st.button(f"Ver detalhes: {client.name}", key=f"client_card_{client.id}", use_container_width=True):
+            on_click(client.id)
 
 
 def render_machine_card(
@@ -179,7 +469,7 @@ def render_machine_card(
     # Renderiza card + botão com label da máquina (clicável)
     container = st.container()
     with container:
-        st.markdown(card_html, unsafe_allow_html=True)
+        st.html(card_html)
         
         # Botoes de feedback
         col_good, col_med, col_bad = st.columns(3)
@@ -675,7 +965,7 @@ def render_alert_tab(repo, machine_id: str, machine_tag: str) -> None:
                 color = "#fd7e14"
                 label = "ACK"
             
-            st.markdown(f"""
+            st.html(f"""
             <div style="
                 border-left: 4px solid {color};
                 padding: 10px 16px;
@@ -693,7 +983,7 @@ def render_alert_tab(repo, machine_id: str, machine_tag: str) -> None:
                     Início: {started[:19].replace('T', ' ') if started else '—'}
                 </div>
             </div>
-            """, unsafe_allow_html=True)
+            """)
         
         st.divider()
     
@@ -800,3 +1090,69 @@ def render_alert_badge(
     metric_label = f" ({metric})" if metric else ""
     
     return f'<span style="background:{color};color:white;padding:2px 10px;border-radius:10px;font-size:0.7rem;font-weight:600;">{text}{metric_label}</span>'
+
+
+def render_device_status_events(events: list[dict]) -> None:
+    """Renderiza lista de eventos de status do dispositivo."""
+    if not events:
+        st.caption("Nenhum evento de conectividade")
+        return
+    
+    for event in reversed(events):
+        event_type = event.get("event_type", "")
+        loss = event.get("packet_loss_percent")
+        measured = event.get("measured_at", "")[:19].replace("T", " ")
+        prev = event.get("previous_status", "")
+        
+        if event_type == "unreachable":
+            icon = "🔴"
+            color = "#dc3545"
+            label = "INACESSÍVEL"
+        elif event_type == "reachable":
+            icon = "🟢"
+            color = "#28a745"
+            label = "RECUPERADO"
+        else:
+            icon = "🟡"
+            color = "#ffc107"
+            label = "PERDA DE PACOTES"
+        
+        prev_str = f", anterior: {prev}" if prev else ""
+        st.html(
+            f'<span style="color:{color};font-size:0.8rem;">'
+            f'{measured} | {icon} <strong>{label}</strong> '
+            f'(loss: {loss:.1f}%{prev_str})'
+            f'</span>'
+        )
+
+
+def _render_reachability_list(local_machines: list[dict]) -> str:
+    """Renderiza lista de alcançabilidade das máquinas locais."""
+    if not local_machines:
+        return '<span style="color:#888;font-size:0.8rem;">Nenhuma máquina local</span>'
+    
+    items = []
+    for m in local_machines:
+        machine = m["machine"]
+        icon, color = _reachability_label(m)
+        
+        latest = m.get("latest_measurement")
+        measured = latest.get("measured_at", "")[:16].replace("T", " ") if latest else "—"
+        
+        status_events = m.get("status_events", [])
+        event_str = ""
+        if status_events:
+            last_event = status_events[0]
+            etype = last_event.get("event_type", "")
+            loss = last_event.get("packet_loss_percent")
+            event_str = f" | {etype} (loss: {loss:.1f}%)" if loss is not None else f" | {etype}"
+        
+        items.append(
+            f'<div style="display:flex;justify-content:space-between;align-items:center;'
+            f'padding:4px 0;border-bottom:1px solid #eee;">'
+            f'<span>{icon} <strong>{machine.tag}</strong> • {machine.ip}</span>'
+            f'<span style="color:{color};font-size:0.75rem;">{measured}{event_str}</span>'
+            f'</div>'
+        )
+    
+    return "".join(items)

@@ -20,6 +20,9 @@ from .traceroute import run_traceroute
 INTERNET_CHECK_MACHINE_TAG = "INTERNET-CHECK"
 INTERNET_CHECK_MACHINE_IP = "8.8.8.8"
 
+REACHABLE_STATUSES = {"ok", "partial"}
+UNREACHABLE_STATUSES = {"unreachable", "error"}
+
 
 @dataclass
 class MonitorEvent:
@@ -55,6 +58,7 @@ class MonitorService:
         self._last_traceroute: dict[str, float] = {}
         self._last_alert_check: dict[str, float] = {}
         self._last_internet_status: dict[str, str] = {}
+        self._last_reachability: dict[str, str] = {}
 
     def stop(self) -> None:
         self._stop.set()
@@ -137,9 +141,19 @@ class MonitorService:
                     timeout_seconds=self.settings.ping_timeout_seconds,
                 )
                 
-                # Salva medição
+                # Salva medição apenas se alcançável
+                if sample.status in UNREACHABLE_STATUSES:
+                    await self._record_unreachable(internet_machine, sample.packet_loss_percent, sample.packets_sent, sample.packets_received)
+                    self.diary.log(
+                        "INTERNET_CHECK_UNREACHABLE",
+                        f"Internet check inacessível {client.name}",
+                        {"client_id": client.id, "loss": sample.packet_loss_percent},
+                    )
+                    continue
+
                 try:
                     await asyncio.to_thread(self.repository.save_measurement, sample)
+                    await self._record_reachable(internet_machine, sample)
                     self._last_internet_status[internet_machine.id] = sample.status
                     self.diary.log(
                         "INTERNET_CHECK_OK",
@@ -281,23 +295,15 @@ class MonitorService:
                     f"Falha ao medir {machine.tag} ({machine.ip})",
                     {"machine_id": machine.id, "error": str(result)},
                 )
-                self.queue.enqueue(
-                    MeasurementSample(
-                        client_id=machine.client_id,
-                        machine_id=machine.id,
-                        latency_ms=None,
-                        jitter_ms=None,
-                        packet_loss_percent=100.0,
-                        packets_sent=0,
-                        packets_received=0,
-                        status="error",
-                        measured_at=datetime.now(timezone.utc).isoformat(),
-                    )
-                )
+                await self._record_unreachable(machine, 100.0, 0, 0)
                 continue
             sample = result
+            if sample.status in UNREACHABLE_STATUSES:
+                await self._record_unreachable(machine, sample.packet_loss_percent, sample.packets_sent, sample.packets_received)
+                continue
             try:
                 await asyncio.to_thread(self.repository.save_measurement, sample)
+                await self._record_reachable(machine, sample)
                 self.diary.log(
                     "MEDICAO_OK",
                     f"Medição enviada para {sample.machine_id}",
@@ -364,6 +370,70 @@ class MonitorService:
             self._last_alert_check[machine_id] = now
             return True
         return False
+
+    async def _record_unreachable(self, machine: Machine, packet_loss: float, packets_sent: int, packets_received: int) -> None:
+        """Registra evento de inacessibilidade e não salva medição na tabela measurements."""
+        previous = self._last_reachability.get(machine.id)
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        if previous in UNREACHABLE_STATUSES or previous is None:
+            event_type = "packet_loss"
+        else:
+            event_type = "unreachable"
+
+        self._last_reachability[machine.id] = "unreachable"
+
+        try:
+            await asyncio.to_thread(
+                self.repository.record_device_status_event,
+                machine_id=machine.id,
+                client_id=machine.client_id,
+                event_type=event_type,
+                packet_loss_percent=packet_loss,
+                latency_ms=None,
+                jitter_ms=None,
+                packets_sent=packets_sent,
+                packets_received=packets_received,
+                previous_status=previous,
+                measured_at=now_iso,
+            )
+        except Exception as exc:
+            self.diary.log(
+                "EVENTO_STATUS_ERRO",
+                f"Falha ao registrar evento de status para {machine.tag}",
+                {"machine_id": machine.id, "error": str(exc)},
+            )
+
+    async def _record_reachable(self, machine: Machine, sample: MeasurementSample) -> None:
+        """Registra evento de alcançabilidade se a máquina estava inacessível."""
+        previous = self._last_reachability.get(machine.id)
+        if previous in UNREACHABLE_STATUSES or previous is None:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            try:
+                await asyncio.to_thread(
+                    self.repository.record_device_status_event,
+                    machine_id=machine.id,
+                    client_id=machine.client_id,
+                    event_type="reachable",
+                    packet_loss_percent=sample.packet_loss_percent,
+                    latency_ms=sample.latency_ms,
+                    jitter_ms=sample.jitter_ms,
+                    packets_sent=sample.packets_sent,
+                    packets_received=sample.packets_received,
+                    previous_status=previous,
+                    measured_at=now_iso,
+                )
+            except Exception as exc:
+                self.diary.log(
+                    "EVENTO_STATUS_ERRO",
+                    f"Falha ao registrar evento de recuperação para {machine.tag}",
+                    {"machine_id": machine.id, "error": str(exc)},
+                )
+        self._last_reachability[machine.id] = sample.status
+
+    async def _get_last_reachability(self, machine_id: str) -> str | None:
+        """Retorna o último status de alcançabilidade conhecido."""
+        return self._last_reachability.get(machine_id)
 
     async def _run_alert_checks(self, now: float) -> None:
         """Avalia regras de alerta para máquinas ativas."""

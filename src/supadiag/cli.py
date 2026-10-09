@@ -77,6 +77,14 @@ def create_parser() -> argparse.ArgumentParser:
     traceroute_parser = subparsers.add_parser("traceroute", help="Executa traceroute para uma máquina")
     traceroute_parser.add_argument("--machine-id", required=True, help="ID da máquina")
     
+    # ml-train
+    ml_train_parser = subparsers.add_parser("ml-train", help="Treina modelo LSTM para uma máquina")
+    ml_train_parser.add_argument("--machine-id", required=True, help="ID da máquina")
+    ml_train_parser.add_argument("--epochs", type=int, default=50, help="Número de épocas")
+    ml_train_parser.add_argument("--batch-size", type=int, default=8, help="Tamanho do batch")
+    ml_train_parser.add_argument("--limit", type=int, default=5000, help="Limite de medições")
+    ml_train_parser.add_argument("--output", default="models", help="Diretório de saída")
+    
     # app (interactive)
     subparsers.add_parser("app", help="Inicia interface interativa (Textual)")
 
@@ -267,6 +275,76 @@ def cmd_traceroute(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ml_train(args: argparse.Namespace) -> int:
+    """Treina modelo LSTM para uma máquina específica."""
+    settings, diary, repo, _ = load_app()
+    machine_id = args.machine_id
+    machine = repo.get_machine(machine_id)
+    if not machine:
+        print(f"Máquina não encontrada: {machine_id}")
+        return 1
+    
+    print(f"Treinando modelo LSTM para {machine.tag} ({machine.ip})")
+    print(f"Épocas: {args.epochs}, Batch: {args.batch_size}, Limit: {args.limit}")
+    
+    from .ml_trainer import NetworkQualityTrainer
+    trainer = NetworkQualityTrainer(settings, repo)
+    
+    try:
+        result = trainer.train(
+            machine_id=machine_id,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            limit=args.limit,
+        )
+        print(f"\n✅ Treino concluído!")
+        print(f"  Épocas treinadas: {result.epochs_trained}")
+        print(f"  Acurácia teste: {result.accuracy:.2%}")
+        print(f"  F1-score: {result.f1_score:.2%}")
+        print(f"  Acurácia validação: {result.val_accuracy:.2%}")
+        print(f"  Melhor validação loss: {result.best_val_loss:.4f}")
+        
+        # Salva modelo
+        from pathlib import Path
+        output_dir = Path(args.output)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        model_path = output_dir / f"model_{machine_id[:8]}.pth"
+        import torch
+        torch.save(trainer.model.state_dict(), model_path)
+        print(f"\n💾 Modelo salvo em: {model_path}")
+        
+        # Salva métricas
+        metrics_path = output_dir / f"metrics_{machine_id[:8]}.json"
+        metrics_data = {
+            "accuracy": result.accuracy,
+            "f1_score": result.f1_score,
+            "val_accuracy": result.val_accuracy,
+            "val_f1": result.val_f1,
+            "epochs_trained": result.epochs_trained,
+            "best_val_loss": result.best_val_loss,
+            "trained_at": result.trained_at,
+            "machine_id": machine_id,
+        }
+        with open(metrics_path, "w") as f:
+            json.dump(metrics_data, f, indent=2)
+        print(f"📊 Métricas salvas em: {metrics_path}")
+        
+        diary.log(
+            "ML_TRAIN_OK",
+            f"Treino concluído para {machine.tag}",
+            {"machine_id": machine_id, "accuracy": result.accuracy},
+        )
+        return 0
+    except Exception as exc:
+        diary.log(
+            "ML_TRAIN_ERRO",
+            f"Falha no treino para {machine.tag}",
+            {"machine_id": machine_id, "error": str(exc)},
+        )
+        print(f"\n❌ Erro no treino: {exc}")
+        return 1
+
+
 def cmd_app(args: argparse.Namespace) -> int:
     from .tui import SupaDiagApp
     settings, diary, repo, queue = load_app()
@@ -290,6 +368,7 @@ def main(argv: list[str] | None = None) -> int:
         "service": cmd_service,
         "diary": cmd_diary,
         "traceroute": cmd_traceroute,
+        "ml-train": cmd_ml_train,
         "app": cmd_app,
     }
     handler = command_map.get(args.command)

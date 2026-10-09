@@ -1,5 +1,6 @@
 # start.ps1 - Inicia o SupaDiag (monitor + servico agendado)
 # Verifica venv, dependencias, servico no Agendador de Tarefas e inicia o monitor + dashboard Streamlit
+# Baixa e instala Python automaticamente se nao estiver presente
 
 Set-Location $PSScriptRoot
 
@@ -7,6 +8,52 @@ Write-Host "=========================================="
 Write-Host "  SupaDiag - Inicializacao"
 Write-Host "=========================================="
 Write-Host ""
+
+# Funcao: Verifica e instala Python se necessario
+function Ensure-Python {
+    $minVersion = "3.10"
+    $pythonUrl = "https://www.python.org/ftp/python/3.12.4/python-3.12.4-amd64.exe"
+    $installerPath = "$env:TEMP\python-installer.exe"
+
+    Write-Host "[0/6] Verificando Python..."
+    try {
+        $versionOutput = python --version 2>&1
+        if ($LASTEXITCODE -eq 0 -and $versionOutput -match "Python\s+(\d+\.\d+)") {
+            $version = [version]$matches[1]
+            $min = [version]$minVersion
+            if ($version -ge $min) {
+                Write-Host "Python $version encontrado (>= $minVersion). OK."
+                return
+            }
+        }
+    } catch {}
+
+    Write-Host "Python $minVersion+ nao encontrado. Baixando instalador oficial..."
+    try {
+        Invoke-WebRequest -Uri $pythonUrl -OutFile $installerPath -UseBasicParsing
+        Write-Host "Instalando Python (silencioso, para todos os usuarios)..."
+        $args = "/quiet", "InstallAllUsers=1", "PrependPath=1", "Include_test=0"
+        $proc = Start-Process -FilePath $installerPath -ArgumentList $args -Wait -PassThru
+        if ($proc.ExitCode -ne 0) {
+            Write-Error "Falha ao instalar Python (codigo $($proc.ExitCode)). Instale manualmente em python.org"
+            Read-Host "Pressione Enter para sair"
+            exit 1
+        }
+        # Refresh PATH
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+        Write-Host "Python instalado com sucesso."
+    } catch {
+        Write-Error "Erro ao baixar/instalar Python: $_"
+        Write-Host "Baixe manualmente em: https://www.python.org/downloads/"
+        Read-Host "Pressione Enter para sair"
+        exit 1
+    } finally {
+        if (Test-Path $installerPath) { Remove-Item $installerPath -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+# 0. Garante Python
+Ensure-Python
 
 # 1. Verifica/cria ambiente virtual
 if (-not (Test-Path "venv")) {

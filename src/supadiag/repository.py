@@ -163,6 +163,36 @@ class SupabaseRepository:
         if not self._rows(response.data) and not getattr(response, "count", 0):
             raise RepositoryError(f"Máquina {machine_id} não foi encontrada.")
 
+    def record_device_status_event(
+        self,
+        machine_id: str,
+        client_id: str,
+        event_type: str,
+        packet_loss_percent: float | None,
+        latency_ms: float | None,
+        jitter_ms: float | None,
+        packets_sent: int,
+        packets_received: int,
+        previous_status: str | None,
+        measured_at: str,
+    ) -> None:
+        payload = {
+            "machine_id": machine_id,
+            "client_id": client_id,
+            "event_type": event_type,
+            "packet_loss_percent": packet_loss_percent,
+            "latency_ms": latency_ms,
+            "jitter_ms": jitter_ms,
+            "packets_sent": packets_sent,
+            "packets_received": packets_received,
+            "previous_status": previous_status,
+            "measured_at": measured_at,
+        }
+        try:
+            self.client.table("device_status_events").insert(payload).execute()
+        except Exception as exc:
+            raise RepositoryError(self._message(exc)) from exc
+
     def insert_measurement(self, sample: MeasurementSample) -> Measurement:
         try:
             response = self.client.table("measurements").insert(sample.as_insert()).execute()
