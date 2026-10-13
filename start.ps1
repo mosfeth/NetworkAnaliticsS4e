@@ -102,6 +102,17 @@ New-Item -ItemType Directory -Force -Path $streamlitConfigPath | Out-Null
 $env:STREAMLIT_CONFIG_DIR = $streamlitConfigPath
 $env:STREAMLIT_BROWSER_GATHER_USAGE_STATS = 'false'
 
+$dashboardPath = Join-Path $PSScriptRoot 'FrontEnd\app.py'
+if (-not (Test-Path -LiteralPath $dashboardPath -PathType Leaf)) {
+    $legacyDashboardPath = Join-Path $PSScriptRoot 'dashboard.py'
+    if (Test-Path -LiteralPath $legacyDashboardPath -PathType Leaf) {
+        Write-Warning "FrontEnd\app.py não está nesta cópia do projeto. Usando dashboard.py (compatibilidade); atualize os arquivos do projeto para recuperar a interface completa."
+        $dashboardPath = $legacyDashboardPath
+    } else {
+        throw "Dashboard não encontrado. Esperado: $(Join-Path $PSScriptRoot 'FrontEnd\app.py')"
+    }
+}
+
 $monitorProcesses = @()
 try {
     $monitorProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
@@ -120,7 +131,7 @@ if ($monitorProcesses.Count -eq 0) {
 }
 
 Write-Host "Iniciando o dashboard em http://127.0.0.1:8502 ..." -ForegroundColor Green
-& $venvPython -m streamlit run (Join-Path $PSScriptRoot 'FrontEnd\app.py') `
+& $venvPython -m streamlit run $dashboardPath `
     --server.address 127.0.0.1 `
     --server.port 8502 `
     --server.headless true `
