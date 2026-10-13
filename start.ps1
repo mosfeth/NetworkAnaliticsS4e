@@ -64,7 +64,7 @@ Write-Host "venv ativo: $env:VIRTUAL_ENV" -ForegroundColor Green
 Stop-ListenerOnPort -Port 8202
 Stop-ListenerOnPort -Port 8502
 
-$moduleCheck = 'import importlib.util, sys; modules = (''supadiag'', ''streamlit'', ''supabase'', ''dotenv'', ''plotly'', ''pandas'', ''streamlit_autorefresh'', ''numpy'', ''torch'', ''sklearn''); sys.exit(any(importlib.util.find_spec(name) is None for name in modules))'
+$moduleCheck = 'import importlib.util, sys; modules = (''supadiag'', ''streamlit'', ''supabase'', ''dotenv'', ''plotly'', ''pandas'', ''streamlit_autorefresh'', ''numpy'', ''torch'', ''sklearn'', ''fastai''); sys.exit(any(importlib.util.find_spec(name) is None for name in modules))'
 Write-Host "Verificando dependências do dashboard e da IA..." -ForegroundColor Yellow
 & $venvPython -c $moduleCheck
 $dependenciesMissing = $LASTEXITCODE -ne 0
@@ -74,10 +74,16 @@ if (-not $dependenciesMissing) {
 }
 
 if ($dependenciesMissing) {
+    $requirementsPath = Join-Path $PSScriptRoot 'requirements.txt'
+    if (-not (Test-Path -LiteralPath $requirementsPath -PathType Leaf)) {
+        throw "O arquivo consolidado de dependências não foi encontrado: $requirementsPath"
+    }
+
     Write-Host "Instalando/ajustando dependências no venv..." -ForegroundColor Yellow
-    & $venvPython -m pip install -e '.[ai]' -r 'FrontEnd\requirements.txt'
+    Write-Host "Usando lista consolidada: $requirementsPath" -ForegroundColor DarkGray
+    & $venvPython -m pip install -e '.[ai]' -r $requirementsPath
     if ($LASTEXITCODE -ne 0) {
-        throw "A instalação das dependências falhou. Confira a conexão e tente novamente."
+        throw "A instalação falhou. Consulte o erro do pip acima (lista: $requirementsPath)."
     }
     & $venvPython -m pip check
     if ($LASTEXITCODE -ne 0) {
