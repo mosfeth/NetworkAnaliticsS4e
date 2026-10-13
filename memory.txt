@@ -570,3 +570,8 @@
 2026-10-13 17:40:24 | INTERNET_CHECK_OK | Verificação internet Komatsu_3Lagoas | client_id=dd69c5b8-92e2-4eb4-9d65-483e3554a698, latency=14.25, loss=0.0
 2026-10-13 | ARQUITETURA: coletor iniciado apenas por start.bat, com venv e dependências do núcleo; dashboard iniciado apenas por FrontEnd/start.bat, com venv próprio. Ambos configurados por .env local e compartilham somente o projeto Supabase para os dados.
 2026-10-13 | STARTUP CORRECTION: registro anterior sobre fallback para dashboard.py foi superado; start.ps1 não procura nem inicia interface e roda somente o coletor.
+2026-10-13 17:45:18 | MEDICAO_OK | Medição enviada para c1f03655-a577-407f-8aa7-599b7f657545 | machine_id=c1f03655-a577-407f-8aa7-599b7f657545, latency=15.25
+2026-10-13 17:45:19 | MEDICAO_OK | Medição enviada para dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa | machine_id=dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa, latency=15.25
+2026-10-13 17:45:22 | INTERNET_CHECK_OK | Verificação internet Aperam_Volvo | client_id=87dcf70a-6b2e-4746-bcd0-43f61d3b89ec, latency=13.75, loss=0.0
+2026-10-13 17:45:26 | INTERNET_CHECK_OK | Verificação internet Komatsu_3Lagoas | client_id=dd69c5b8-92e2-4eb4-9d65-483e3554a698, latency=13.75, loss=0.0
+2026-10-13 | DASHBOARD UX: métricas dentro dos cards da visão geral receberam tipografia menor e menos padding, com CSS escopado por card; layout dos detalhes permanece igual.

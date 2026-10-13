@@ -82,6 +82,26 @@ st.markdown("""
     div[data-testid="stMetric"] [data-testid="stMetricDelta"] svg {
         fill: currentColor;
     }
+    div[class*="st-key-dashboard-machine-card"] div[data-testid="stMetric"] {
+        min-height: 74px;
+        padding: 7px 8px;
+        border-radius: 9px;
+        box-shadow: none;
+    }
+    div[class*="st-key-dashboard-machine-card"] [data-testid="stMetricLabel"] p {
+        font-size: 0.68rem !important;
+        line-height: 1.15 !important;
+        margin-bottom: 2px;
+    }
+    div[class*="st-key-dashboard-machine-card"] [data-testid="stMetricValue"],
+    div[class*="st-key-dashboard-machine-card"] [data-testid="stMetricValue"] div {
+        font-size: 1rem !important;
+        line-height: 1.15 !important;
+        white-space: nowrap;
+    }
+    div[class*="st-key-dashboard-machine-card"] [data-testid="stMetricDelta"] {
+        font-size: 0.65rem !important;
+    }
     div[data-testid="stTabs"] button[role="tab"] {
         border-radius: 10px 10px 0 0;
         font-weight: 600;

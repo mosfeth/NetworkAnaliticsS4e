@@ -566,7 +566,7 @@ def render_dashboard_machine_card(
         except (TypeError, ValueError):
             return "—"
 
-    with st.container(border=True):
+    with st.container(border=True, key=f"dashboard-machine-card-{machine.id}"):
         title_col, status_col = st.columns([3, 1])
         title_col.markdown(f"**{machine.tag}**")
         status_col.markdown(f"{status_icon} {status_label}")
