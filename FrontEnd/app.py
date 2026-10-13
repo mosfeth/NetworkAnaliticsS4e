@@ -1022,7 +1022,27 @@ def _filter_client_summary_to_work_schedules(clients_data: list[dict]) -> None:
             machine_data["status_events"] = _filter_records_to_work_schedule(
                 machine_data.get("status_events", []), schedule
             )
-            machine_data["latest_measurement"] = records[-1] if records else None
+            latest_measurement = records[-1] if records else None
+            latest_failure = max(
+                (event for event in machine_data["status_events"]
+                 if event.get("event_type") in ("unreachable", "packet_loss")),
+                key=lambda event: event.get("measured_at", ""),
+                default=None,
+            )
+            if latest_failure and (
+                not latest_measurement
+                or latest_failure.get("measured_at", "") > latest_measurement.get("measured_at", "")
+            ):
+                latest_measurement = {
+                    "latency_ms": latest_failure.get("latency_ms"),
+                    "jitter_ms": latest_failure.get("jitter_ms"),
+                    "packet_loss_percent": latest_failure.get("packet_loss_percent", 100.0),
+                    "packets_sent": latest_failure.get("packets_sent", 0),
+                    "packets_received": latest_failure.get("packets_received", 0),
+                    "status": "unreachable",
+                    "measured_at": latest_failure.get("measured_at"),
+                }
+            machine_data["latest_measurement"] = latest_measurement
             reachable = [record for record in records if record.get("status") in ("ok", "partial")]
             latencies = [float(r["latency_ms"]) for r in reachable if r.get("latency_ms") is not None]
             jitters = [float(r["jitter_ms"]) for r in reachable if r.get("jitter_ms") is not None]

@@ -116,3 +116,55 @@
 2026-10-13 08:41:11 | MEDICAO_OK | Medição enviada para dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa | machine_id=dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa, latency=16.04
 2026-10-13 08:42:51 | INTERNET_CHECK_OK | Verificação internet Aperam_Volvo | client_id=87dcf70a-6b2e-4746-bcd0-43f61d3b89ec, latency=15.04, loss=0.0
 2026-10-13 08:44:32 | INTERNET_CHECK_OK | Verificação internet Komatsu_3Lagoas | client_id=dd69c5b8-92e2-4eb4-9d65-483e3554a698, latency=15.03, loss=0.0
+2026-10-13 08:48:03 | EVENTO_STATUS_ERRO | Falha ao registrar evento de status para Carretinha | machine_id=b94c8414-3766-4225-b5f7-bb0635eddfb3, error='SupabaseRepository' object has no attribute 'record_device_status_event'
+2026-10-13 08:48:03 | EVENTO_STATUS_ERRO | Falha ao registrar evento de status para EC250D | machine_id=f6bb0eb4-a126-4f71-8a5f-8ecc4bdcc23f, error='SupabaseRepository' object has no attribute 'record_device_status_event'
+2026-10-13 08:48:03 | MEDICAO_OK | Medição enviada para c1f03655-a577-407f-8aa7-599b7f657545 | machine_id=c1f03655-a577-407f-8aa7-599b7f657545, latency=16.06
+2026-10-13 08:48:04 | MEDICAO_OK | Medição enviada para dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa | machine_id=dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa, latency=16.36
+2026-10-13 08:49:44 | INTERNET_CHECK_OK | Verificação internet Aperam_Volvo | client_id=87dcf70a-6b2e-4746-bcd0-43f61d3b89ec, latency=15.79, loss=0.0
+2026-10-13 08:51:24 | INTERNET_CHECK_OK | Verificação internet Komatsu_3Lagoas | client_id=dd69c5b8-92e2-4eb4-9d65-483e3554a698, latency=14.91, loss=0.0
+2026-10-13 08:54:56 | EVENTO_STATUS_ERRO | Falha ao registrar evento de status para Carretinha | machine_id=b94c8414-3766-4225-b5f7-bb0635eddfb3, error='SupabaseRepository' object has no attribute 'record_device_status_event'
+2026-10-13 08:54:56 | EVENTO_STATUS_ERRO | Falha ao registrar evento de status para EC250D | machine_id=f6bb0eb4-a126-4f71-8a5f-8ecc4bdcc23f, error='SupabaseRepository' object has no attribute 'record_device_status_event'
+2026-10-13 08:54:56 | MEDICAO_OK | Medição enviada para c1f03655-a577-407f-8aa7-599b7f657545 | machine_id=c1f03655-a577-407f-8aa7-599b7f657545, latency=16.06
+2026-10-13 08:54:57 | MEDICAO_OK | Medição enviada para dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa | machine_id=dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa, latency=16.0
+2026-10-13 08:56:37 | INTERNET_CHECK_OK | Verificação internet Aperam_Volvo | client_id=87dcf70a-6b2e-4746-bcd0-43f61d3b89ec, latency=15.57, loss=0.0
+2026-10-13 08:58:18 | INTERNET_CHECK_OK | Verificação internet Komatsu_3Lagoas | client_id=dd69c5b8-92e2-4eb4-9d65-483e3554a698, latency=15.09, loss=0.0
+2026-10-13 09:01:49 | EVENTO_STATUS_ERRO | Falha ao registrar evento de status para Carretinha | machine_id=b94c8414-3766-4225-b5f7-bb0635eddfb3, error='SupabaseRepository' object has no attribute 'record_device_status_event'
+2026-10-13 09:01:49 | EVENTO_STATUS_ERRO | Falha ao registrar evento de status para EC250D | machine_id=f6bb0eb4-a126-4f71-8a5f-8ecc4bdcc23f, error='SupabaseRepository' object has no attribute 'record_device_status_event'
+2026-10-13 09:01:49 | MEDICAO_OK | Medição enviada para c1f03655-a577-407f-8aa7-599b7f657545 | machine_id=c1f03655-a577-407f-8aa7-599b7f657545, latency=15.66
+2026-10-13 09:01:50 | MEDICAO_OK | Medição enviada para dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa | machine_id=dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa, latency=15.16
+2026-10-13 09:03:31 | INTERNET_CHECK_OK | Verificação internet Aperam_Volvo | client_id=87dcf70a-6b2e-4746-bcd0-43f61d3b89ec, latency=14.82, loss=0.0
+2026-10-13 09:05:11 | INTERNET_CHECK_OK | Verificação internet Komatsu_3Lagoas | client_id=dd69c5b8-92e2-4eb4-9d65-483e3554a698, latency=14.91, loss=0.0
+2026-10-13 09:08:42 | EVENTO_STATUS_ERRO | Falha ao registrar evento de status para Carretinha | machine_id=b94c8414-3766-4225-b5f7-bb0635eddfb3, error='SupabaseRepository' object has no attribute 'record_device_status_event'
+2026-10-13 09:08:42 | EVENTO_STATUS_ERRO | Falha ao registrar evento de status para EC250D | machine_id=f6bb0eb4-a126-4f71-8a5f-8ecc4bdcc23f, error='SupabaseRepository' object has no attribute 'record_device_status_event'
+2026-10-13 09:08:43 | MEDICAO_OK | Medição enviada para c1f03655-a577-407f-8aa7-599b7f657545 | machine_id=c1f03655-a577-407f-8aa7-599b7f657545, latency=15.63
+2026-10-13 09:08:43 | MEDICAO_OK | Medição enviada para dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa | machine_id=dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa, latency=15.48
+2026-10-13 09:10:24 | INTERNET_CHECK_OK | Verificação internet Aperam_Volvo | client_id=87dcf70a-6b2e-4746-bcd0-43f61d3b89ec, latency=14.95, loss=0.0
+2026-10-13 09:12:05 | INTERNET_CHECK_OK | Verificação internet Komatsu_3Lagoas | client_id=dd69c5b8-92e2-4eb4-9d65-483e3554a698, latency=14.91, loss=0.0
+2026-10-13 09:15:36 | EVENTO_STATUS_ERRO | Falha ao registrar evento de status para Carretinha | machine_id=b94c8414-3766-4225-b5f7-bb0635eddfb3, error='SupabaseRepository' object has no attribute 'record_device_status_event'
+2026-10-13 09:15:36 | EVENTO_STATUS_ERRO | Falha ao registrar evento de status para EC250D | machine_id=f6bb0eb4-a126-4f71-8a5f-8ecc4bdcc23f, error='SupabaseRepository' object has no attribute 'record_device_status_event'
+2026-10-13 09:15:36 | MEDICAO_OK | Medição enviada para c1f03655-a577-407f-8aa7-599b7f657545 | machine_id=c1f03655-a577-407f-8aa7-599b7f657545, latency=15.31
+2026-10-13 09:15:37 | MEDICAO_OK | Medição enviada para dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa | machine_id=dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa, latency=15.08
+2026-10-13 09:17:17 | INTERNET_CHECK_OK | Verificação internet Aperam_Volvo | client_id=87dcf70a-6b2e-4746-bcd0-43f61d3b89ec, latency=16.14, loss=0.0
+2026-10-13 09:18:58 | INTERNET_CHECK_OK | Verificação internet Komatsu_3Lagoas | client_id=dd69c5b8-92e2-4eb4-9d65-483e3554a698, latency=15.43, loss=0.0
+2026-10-13 09:22:28 | MEDICAO_OK | Medição enviada para c1f03655-a577-407f-8aa7-599b7f657545 | machine_id=c1f03655-a577-407f-8aa7-599b7f657545, latency=14.75
+2026-10-13 09:22:28 | MEDICAO_OK | Medição enviada para dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa | machine_id=dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa, latency=14.25
+2026-10-13 09:22:32 | INTERNET_CHECK_OK | Verificação internet Aperam_Volvo | client_id=87dcf70a-6b2e-4746-bcd0-43f61d3b89ec, latency=13.75, loss=0.0
+2026-10-13 09:22:35 | INTERNET_CHECK_OK | Verificação internet Komatsu_3Lagoas | client_id=dd69c5b8-92e2-4eb4-9d65-483e3554a698, latency=16.75, loss=0.0
+2026-10-13 09:24:12 | MEDICAO_OK | Medição enviada para c1f03655-a577-407f-8aa7-599b7f657545 | machine_id=c1f03655-a577-407f-8aa7-599b7f657545, latency=15.0
+2026-10-13 09:24:12 | MEDICAO_OK | Medição enviada para dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa | machine_id=dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa, latency=13.25
+2026-10-13 09:24:16 | INTERNET_CHECK_OK | Verificação internet Aperam_Volvo | client_id=87dcf70a-6b2e-4746-bcd0-43f61d3b89ec, latency=16.25, loss=0.0
+2026-10-13 09:24:19 | INTERNET_CHECK_OK | Verificação internet Komatsu_3Lagoas | client_id=dd69c5b8-92e2-4eb4-9d65-483e3554a698, latency=14.0, loss=0.0
+2026-10-13 09:27:20 | TRACEROUTE_OK | Traceroute Carretinha (192.168.101.1) | machine_id=b94c8414-3766-4225-b5f7-bb0635eddfb3, total_hops=0, destination_reached=False
+2026-10-13 09:30:20 | TRACEROUTE_OK | Traceroute EC250D (192.168.50.31) | machine_id=f6bb0eb4-a126-4f71-8a5f-8ecc4bdcc23f, total_hops=0, destination_reached=False
+2026-10-13 09:30:34 | MEDICAO_OK | Medição enviada para c1f03655-a577-407f-8aa7-599b7f657545 | machine_id=c1f03655-a577-407f-8aa7-599b7f657545, latency=17.75
+2026-10-13 09:30:34 | MEDICAO_OK | Medição enviada para dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa | machine_id=dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa, latency=14.75
+2026-10-13 09:30:38 | INTERNET_CHECK_OK | Verificação internet Aperam_Volvo | client_id=87dcf70a-6b2e-4746-bcd0-43f61d3b89ec, latency=14.75, loss=0.0
+2026-10-13 09:30:42 | INTERNET_CHECK_OK | Verificação internet Komatsu_3Lagoas | client_id=dd69c5b8-92e2-4eb4-9d65-483e3554a698, latency=16.75, loss=0.0
+2026-10-13 09:35:27 | MEDICAO_OK | Medição enviada para c1f03655-a577-407f-8aa7-599b7f657545 | machine_id=c1f03655-a577-407f-8aa7-599b7f657545, latency=14.25
+2026-10-13 09:35:27 | MEDICAO_OK | Medição enviada para dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa | machine_id=dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa, latency=14.25
+2026-10-13 09:35:30 | INTERNET_CHECK_OK | Verificação internet Aperam_Volvo | client_id=87dcf70a-6b2e-4746-bcd0-43f61d3b89ec, latency=16.75, loss=0.0
+2026-10-13 09:35:34 | INTERNET_CHECK_OK | Verificação internet Komatsu_3Lagoas | client_id=dd69c5b8-92e2-4eb4-9d65-483e3554a698, latency=15.0, loss=0.0
+2026-10-13 09:40:28 | MEDICAO_OK | Medição enviada para c1f03655-a577-407f-8aa7-599b7f657545 | machine_id=c1f03655-a577-407f-8aa7-599b7f657545, latency=14.5
+2026-10-13 09:40:28 | MEDICAO_OK | Medição enviada para dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa | machine_id=dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa, latency=14.75
+2026-10-13 09:40:32 | INTERNET_CHECK_OK | Verificação internet Aperam_Volvo | client_id=87dcf70a-6b2e-4746-bcd0-43f61d3b89ec, latency=15.0, loss=0.0
+2026-10-13 09:40:35 | INTERNET_CHECK_OK | Verificação internet Komatsu_3Lagoas | client_id=dd69c5b8-92e2-4eb4-9d65-483e3554a698, latency=15.5, loss=0.0

@@ -417,6 +417,28 @@ class MonitorService:
 
         self._last_reachability[machine.id] = "unreachable"
 
+        # Preserve failed probes as measurements: packet loss is still useful
+        # even when latency and jitter cannot be calculated.
+        try:
+            sample = MeasurementSample(
+                client_id=machine.client_id,
+                machine_id=machine.id,
+                latency_ms=None,
+                jitter_ms=None,
+                packet_loss_percent=packet_loss,
+                packets_sent=packets_sent,
+                packets_received=packets_received,
+                status="unreachable",
+                measured_at=now_iso,
+            )
+            await asyncio.to_thread(self.repository.save_measurement, sample)
+        except Exception as exc:
+            self.diary.log(
+                "MEDICAO_INALCANCAVEL_ERRO",
+                f"Falha ao salvar a perda de conectividade para {machine.tag}",
+                {"machine_id": machine.id, "error": str(exc)},
+            )
+
         try:
             await asyncio.to_thread(
                 self.repository.record_device_status_event,

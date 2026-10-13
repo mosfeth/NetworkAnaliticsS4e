@@ -80,7 +80,7 @@ def load_settings(root: Path | None = None) -> Settings:
         memory_file=root / "memory.txt",
         queue_file=data_dir / "pending_measurements.jsonl",
         task_name=os.getenv("SUPADIAG_TASK_NAME", "SupaDiag Monitor"),
-        ping_count=int(os.getenv("SUPADIAG_PING_COUNT", "100")),
+        ping_count=int(os.getenv("SUPADIAG_PING_COUNT", "4")),
         ping_timeout_seconds=float(os.getenv("SUPADIAG_PING_TIMEOUT_SECONDS", "2.0")),
         retention_days=int(os.getenv("SUPADIAG_RETENTION_DAYS", "180")),
         internet_check_enabled=os.getenv("SUPADIAG_INTERNET_CHECK_ENABLED", "true").lower() == "true",
