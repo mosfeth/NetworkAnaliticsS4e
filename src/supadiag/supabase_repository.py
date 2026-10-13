@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import httpx
 from supabase import create_client, Client
 
@@ -192,6 +194,56 @@ class SupabaseRepository:
             .limit(limit)
         )
         return data
+
+    def get_measurements(self, machine_id: str, hours: int = 24, limit: int = 500) -> list[dict]:
+        """Busca medições recentes de uma máquina em ordem cronológica crescente."""
+        since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        data = self._execute(
+            self.client.table("measurements")
+            .select("*")
+            .eq("machine_id", machine_id)
+            .gte("measured_at", since)
+            .order("measured_at", desc=True)
+            .limit(limit)
+        ) or []
+        return list(reversed(data))
+
+    def list_machine_feedback(self, machine_id: str, limit: int = 100) -> list[dict]:
+        """Busca avaliações humanas mais recentes de uma máquina."""
+        return self._execute(
+            self.client.table("machine_feedback")
+            .select("*")
+            .eq("machine_id", machine_id)
+            .order("created_at", desc=True)
+            .limit(limit)
+        ) or []
+
+    def record_device_status_event(
+        self,
+        machine_id: str,
+        client_id: str,
+        event_type: str,
+        packet_loss_percent: float | None = None,
+        latency_ms: float | None = None,
+        jitter_ms: float | None = None,
+        packets_sent: int | None = None,
+        packets_received: int | None = None,
+        previous_status: str | None = None,
+        measured_at: str | None = None,
+    ) -> None:
+        payload = {
+            "machine_id": machine_id,
+            "client_id": client_id,
+            "event_type": event_type,
+            "packet_loss_percent": packet_loss_percent,
+            "latency_ms": latency_ms,
+            "jitter_ms": jitter_ms,
+            "packets_sent": packets_sent,
+            "packets_received": packets_received,
+            "previous_status": previous_status,
+            "measured_at": measured_at or datetime.now(timezone.utc).isoformat(),
+        }
+        self._execute(self.client.table("device_status_events").insert(payload))
 
     def cleanup_old_measurements(self, cutoff_iso: str) -> int:
         data = self._execute(

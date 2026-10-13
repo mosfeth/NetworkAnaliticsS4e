@@ -16,7 +16,7 @@ class NetworkQualityLSTM(nn.Module):
 
     def __init__(
         self,
-        input_features: int = 8,
+        input_features: int = 10,
         hidden_size: int = 64,
         num_layers: int = 2,
         output_classes: int = 3,
@@ -37,7 +37,6 @@ class NetworkQualityLSTM(nn.Module):
         self.fc1 = nn.Linear(hidden_size, 16)
         self.relu = nn.ReLU()
         self.fc2 = nn.Linear(16, output_classes)
-        self.softmax = nn.Softmax(dim=1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -55,7 +54,7 @@ class NetworkQualityLSTM(nn.Module):
         out = self.fc1(out)
         out = self.relu(out)
         out = self.fc2(out)
-        return self.softmax(out)
+        return out
 
     def predict_class(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -66,6 +65,6 @@ class NetworkQualityLSTM(nn.Module):
         """
         self.eval()
         with torch.no_grad():
-            probs = self.forward(x)
+            probs = torch.softmax(self.forward(x), dim=1)
             classes = torch.argmax(probs, dim=1)
         return classes, probs

@@ -307,10 +307,23 @@ def cmd_ml_train(args: argparse.Namespace) -> int:
         # Salva modelo
         from pathlib import Path
         output_dir = Path(args.output)
+        if not output_dir.is_absolute():
+            output_dir = settings.project_root / output_dir
         output_dir.mkdir(parents=True, exist_ok=True)
         model_path = output_dir / f"model_{machine_id[:8]}.pth"
         import torch
-        torch.save(trainer.model.state_dict(), model_path)
+        if trainer.model is None:
+            raise RuntimeError("O treinamento terminou sem produzir um modelo.")
+        torch.save(
+            {
+                "state_dict": trainer.model.state_dict(),
+                "scaler_mean": trainer.scaler.mean_.tolist(),
+                "scaler_scale": trainer.scaler.scale_.tolist(),
+                "machine_id": machine_id,
+                "trained_at": result.trained_at,
+            },
+            model_path,
+        )
         print(f"\n💾 Modelo salvo em: {model_path}")
         
         # Salva métricas

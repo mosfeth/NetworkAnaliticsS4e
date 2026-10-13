@@ -192,6 +192,27 @@ class FrontendRepository:
         )
         data = [m for m in data if m.get("status") in REACHABLE_STATUSES]
         return data
+
+    def get_measurements_between(
+        self, machine_id: str, start_at: str, end_at: str, limit: int = 20000
+    ) -> list[dict]:
+        """Busca medições alcançáveis de uma máquina em um intervalo exato."""
+        data = []
+        for offset in range(0, limit, 1000):
+            page_end = min(offset + 999, limit - 1)
+            page = self._execute(
+                self.client.table("measurements")
+                .select("*")
+                .eq("machine_id", machine_id)
+                .gte("measured_at", start_at)
+                .lte("measured_at", end_at)
+                .order("measured_at", desc=False)
+                .range(offset, page_end)
+            )
+            data.extend(page)
+            if len(page) < page_end - offset + 1:
+                break
+        return [m for m in data if m.get("status") in REACHABLE_STATUSES]
     
     def get_latest_measurement(self, machine_id: str) -> dict | None:
         """Retorna a medição mais recente de uma máquina."""
@@ -356,6 +377,7 @@ class FrontendRepository:
             "packets_sent": measurement.get("packets_sent", 0) if measurement else 0,
             "hour_of_day": datetime.now(timezone.utc).hour,
             "day_of_week": datetime.now(timezone.utc).weekday(),
+            "notes": f"source_measurement_at={measurement.get('measured_at')}" if measurement and measurement.get("measured_at") else None,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         
@@ -514,4 +536,25 @@ class FrontendRepository:
         if client_id:
             query = query.eq("client_id", client_id)
         data = self._execute(query)
+        return data or []
+
+    def get_device_status_events_between(
+        self, machine_id: str, start_at: str, end_at: str, limit: int = 20000
+    ) -> list[dict]:
+        """Retorna eventos de conectividade em um intervalo exato."""
+        data = []
+        for offset in range(0, limit, 1000):
+            page_end = min(offset + 999, limit - 1)
+            page = self._execute(
+                self.client.table("device_status_events")
+                .select("*")
+                .eq("machine_id", machine_id)
+                .gte("measured_at", start_at)
+                .lte("measured_at", end_at)
+                .order("measured_at", desc=False)
+                .range(offset, page_end)
+            )
+            data.extend(page)
+            if len(page) < page_end - offset + 1:
+                break
         return data or []

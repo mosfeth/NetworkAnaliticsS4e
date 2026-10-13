@@ -28,7 +28,7 @@ python -m pip install --upgrade pip >$null 2>&1
 
 # 3. Instala dependencias
 Write-Host "[3/3] Instalando dependencias do projeto..."
-pip install -e ".[dev]"
+pip install -e ".[dev,ai]"
 if ($LASTEXITCODE -ne 0) {
     Write-Error "ERRO: Falha na instalacao das dependencias."
     Read-Host "Pressione Enter para sair"

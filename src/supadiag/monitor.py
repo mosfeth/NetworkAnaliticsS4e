@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time as datetime_time, timedelta, timezone
 from typing import Callable, Optional
+from zoneinfo import ZoneInfo
 
 from .config import Settings
 from .diary import Diary
@@ -59,6 +61,7 @@ class MonitorService:
         self._last_alert_check: dict[str, float] = {}
         self._last_internet_status: dict[str, str] = {}
         self._last_reachability: dict[str, str] = {}
+        self._work_schedules: dict[str, dict] = {}
 
     def stop(self) -> None:
         self._stop.set()
@@ -70,12 +73,13 @@ class MonitorService:
 
     async def run_cycle(self) -> None:
         now = time.monotonic()
+        self._work_schedules = self._load_work_schedules()
         
         # 1. Verifica máquinas regulares
         machines = await asyncio.to_thread(self.repository.list_machines, active_only=True)
         due_machines = [
             m for m in machines
-            if self._is_due(m, now)
+            if self._is_within_work_schedule(m.id) and self._is_due(m, now)
         ]
         if due_machines:
             await self._measure_batch(due_machines, now)
@@ -95,6 +99,32 @@ class MonitorService:
         # 5. Processa fila de retry e limpeza
         await self._retry_queue(now)
         await self._maybe_cleanup(now)
+
+    def _load_work_schedules(self) -> dict[str, dict]:
+        schedule_file = self.settings.data_dir / "work_schedules.json"
+        try:
+            with schedule_file.open("r", encoding="utf-8") as file:
+                data = json.load(file)
+            return data if isinstance(data, dict) else {}
+        except FileNotFoundError:
+            return {}
+        except (OSError, json.JSONDecodeError) as exc:
+            self.diary.log("HORARIO_TRABALHO_ERRO", "Não foi possível ler horários de trabalho; usando padrão 07:00–18:00.", {"error": str(exc)})
+            return {}
+
+    def _is_within_work_schedule(self, machine_id: str) -> bool:
+        schedule = self._work_schedules.get(machine_id, {})
+        if schedule.get("enabled", True) is False:
+            return True
+        try:
+            start = datetime_time.fromisoformat(schedule.get("start", "07:00"))
+            end = datetime_time.fromisoformat(schedule.get("end", "18:00"))
+        except (TypeError, ValueError):
+            start, end = datetime_time(7, 0), datetime_time(18, 0)
+        local_now = datetime.now(ZoneInfo("America/Sao_Paulo")).time().replace(second=0, microsecond=0)
+        if start <= end:
+            return start <= local_now <= end
+        return local_now >= start or local_now <= end
 
     def _is_due(self, machine: Machine, now: float) -> bool:
         last = self._last_run.get(machine.id, 0)
@@ -131,6 +161,8 @@ class MonitorService:
                 # Busca ou cria máquina de internet check para este cliente
                 internet_machine = await self._get_or_create_internet_machine(client.id)
                 if not internet_machine:
+                    continue
+                if not self._is_within_work_schedule(internet_machine.id):
                     continue
                 
                 # Executa medição com 100 pings
@@ -181,6 +213,8 @@ class MonitorService:
             machines = await asyncio.to_thread(self.repository.list_machines, active_only=True)
             
             for machine in machines:
+                if not self._is_within_work_schedule(machine.id):
+                    continue
                 if machine.tag == INTERNET_CHECK_MACHINE_TAG:
                     if not self._should_run_internet_traceroute(machine.id, now):
                         continue
@@ -458,6 +492,8 @@ class MonitorService:
             
             # Avalia cada máquina que tem regras
             for machine_id, machine_rules in rules_by_machine.items():
+                if not self._is_within_work_schedule(machine_id):
+                    continue
                 if not self._is_alert_due(machine_id, now):
                     continue
                 

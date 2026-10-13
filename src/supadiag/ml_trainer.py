@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import math
 import json
+from bisect import bisect_right
+from copy import deepcopy
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, time as datetime_time, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import torch
@@ -63,74 +66,160 @@ class NetworkQualityTrainer:
         self.horizon = horizon
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.scaler = StandardScaler()
+        self.model: NetworkQualityLSTM | None = None
 
     def prepare_data(self, machine_id: str, limit: int = 5000) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Prepara dados para treinamento.
-        
-        Args:
-            machine_id: ID da máquina
-            limit: Limite de medições para buscar
-            
-        Returns:
-            (sequences, labels) arrays numpy
-        """
-        measurements = self.repository.get_measurements(machine_id, hours=720, limit=limit)
-        if not measurements or len(measurements) < self.sequence_length + self.horizon:
-            raise ValueError("Dados insuficientes para treinamento")
+        """Build labeled windows from operator feedback and paired local/Internet signals."""
+        machine = self.repository.get_machine(machine_id)
+        if not machine:
+            raise ValueError("Equipamento não encontrado para treinamento.")
 
-        # Extrai features
-        features = []
-        labels = []
+        primary = self.repository.get_measurements(machine_id, hours=720, limit=limit)
+        feedbacks = self.repository.list_machine_feedback(machine_id=machine_id, limit=2000)
+        related = self.repository.list_machines(client_id=machine.client_id, active_only=True)
+        internet_machine = next((item for item in related if item.tag == "INTERNET-CHECK"), None)
 
-        for i in range(len(measurements) - self.sequence_length - self.horizon + 1):
-            window = measurements[i : i + self.sequence_length]
-            target_idx = i + self.sequence_length + self.horizon - 1
-            target = measurements[target_idx]
+        try:
+            schedule_file = self.settings.data_dir / "work_schedules.json"
+            schedules = json.loads(schedule_file.read_text(encoding="utf-8"))
+            if not isinstance(schedules, dict):
+                schedules = {}
+        except (OSError, json.JSONDecodeError):
+            schedules = {}
 
-            # Features do window
-            seq_features = []
-            for m in window:
-                ts = datetime.fromisoformat(m.get("measured_at", ""))
-                hour = ts.hour
-                day = ts.weekday()
+        def filter_schedule(rows: list[dict], equipment_id: str) -> list[dict]:
+            schedule = {"enabled": True, "start": "07:00", "end": "18:00"}
+            saved = schedules.get(equipment_id, {})
+            if isinstance(saved, dict):
+                schedule.update(saved)
+            if not schedule.get("enabled", True):
+                return rows
+            try:
+                start = datetime_time.fromisoformat(schedule.get("start", "07:00"))
+                end = datetime_time.fromisoformat(schedule.get("end", "18:00"))
+            except (TypeError, ValueError):
+                start, end = datetime_time(7), datetime_time(18)
+            result = []
+            for row in rows:
+                try:
+                    parsed = datetime.fromisoformat(str(row.get("measured_at", "")).replace("Z", "+00:00"))
+                    if parsed.tzinfo is None:
+                        parsed = parsed.replace(tzinfo=timezone.utc)
+                    local_time = parsed.astimezone(ZoneInfo("America/Sao_Paulo")).time().replace(second=0, microsecond=0)
+                except (TypeError, ValueError):
+                    continue
+                inside = start <= local_time <= end if start <= end else local_time >= start or local_time <= end
+                if inside:
+                    result.append(row)
+            return result
 
-                seq_features.append([
-                    m.get("latency_ms") or 0,
-                    m.get("jitter_ms") or 0,
-                    m.get("packet_loss_percent") or 0,
-                    m.get("packets_received", 0) / max(m.get("packets_sent", 1), 1) * 100,
-                    math.sin(2 * math.pi * hour / 24),
-                    math.cos(2 * math.pi * hour / 24),
-                    math.sin(2 * math.pi * day / 7),
-                    math.cos(2 * math.pi * day / 7),
+        primary = filter_schedule(primary, machine_id)
+        if machine.tag == "INTERNET-CHECK":
+            internet_rows = primary
+        else:
+            internet_rows = []
+            if internet_machine and internet_machine.id != machine_id:
+                internet_rows = self.repository.get_measurements(internet_machine.id, hours=720, limit=limit)
+                internet_rows = filter_schedule(internet_rows, internet_machine.id)
+
+        if len(primary) < self.sequence_length:
+            raise ValueError("Ainda não há medições suficientes para montar uma sequência de treino.")
+        if not feedbacks:
+            raise ValueError("Ainda não há avaliações humanas para treinar o modelo.")
+
+        def parse_timestamp(value: str) -> datetime | None:
+            if not value:
+                return None
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+            except (TypeError, ValueError):
+                return None
+
+        timed_primary = [
+            (stamp, row) for row in primary
+            if (stamp := parse_timestamp(row.get("measured_at", ""))) is not None
+        ]
+        timed_internet = [
+            (stamp, row) for row in internet_rows
+            if (stamp := parse_timestamp(row.get("measured_at", ""))) is not None
+        ]
+        times = [stamp for stamp, _ in timed_primary]
+        internet_times = [stamp for stamp, _ in timed_internet]
+        if len(timed_primary) < self.sequence_length:
+            raise ValueError("Ainda não há medições válidas suficientes para formar as sequências.")
+
+        frequency = getattr(machine, "frequency_seconds", 300) or 300
+        internet_frequency = (getattr(internet_machine, "frequency_seconds", 300) or 300) if internet_machine else 300
+        max_feedback_age = timedelta(seconds=max(900, frequency * 3))
+        max_pair_age = timedelta(seconds=max(900, frequency * 3, internet_frequency * 3))
+        class_ids = {"bom": 0, "medio": 1, "ruim": 2}
+        labeled_windows: dict[int, tuple[list[list[float]], int]] = {}
+
+        def number(row: dict, field: str) -> float:
+            try:
+                return float(row.get(field) or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        for feedback in sorted(feedbacks, key=lambda row: row.get("created_at", ""), reverse=True):
+            label = class_ids.get(str(feedback.get("label", "")).lower())
+            if label is None:
+                continue
+            notes = str(feedback.get("notes") or "")
+            source_time = notes.removeprefix("source_measurement_at=") if notes.startswith("source_measurement_at=") else ""
+            feedback_time = parse_timestamp(source_time) or parse_timestamp(feedback.get("created_at", ""))
+            if feedback_time is None:
+                continue
+            target = bisect_right(times, feedback_time) - 1
+            if target < self.sequence_length - 1 or target in labeled_windows:
+                continue
+            if feedback_time - times[target] > max_feedback_age:
+                continue
+
+            sequence = []
+            valid_window = True
+            for stamp, local_row in timed_primary[target - self.sequence_length + 1:target + 1]:
+                internet_row = None
+                if timed_internet:
+                    internet_index = bisect_right(internet_times, stamp) - 1
+                    if internet_index >= 0 and stamp - internet_times[internet_index] <= max_pair_age:
+                        internet_row = timed_internet[internet_index][1]
+                if machine.tag == "INTERNET-CHECK":
+                    internet_row = internet_row or local_row
+                    local_metrics = (0.0, 0.0, 0.0)
+                else:
+                    local_metrics = tuple(number(local_row, field) for field in (
+                        "latency_ms", "jitter_ms", "packet_loss_percent"
+                    ))
+                if internet_machine and machine.tag != "INTERNET-CHECK" and internet_row is None:
+                    valid_window = False
+                    break
+                internet_metrics = tuple(number(internet_row or {}, field) for field in (
+                    "latency_ms", "jitter_ms", "packet_loss_percent"
+                ))
+                local_stamp = stamp.astimezone(ZoneInfo("America/Sao_Paulo"))
+                hour, day = local_stamp.hour, local_stamp.weekday()
+                sequence.append([
+                    *local_metrics, *internet_metrics,
+                    math.sin(2 * math.pi * hour / 24), math.cos(2 * math.pi * hour / 24),
+                    math.sin(2 * math.pi * day / 7), math.cos(2 * math.pi * day / 7),
                 ])
+            if valid_window and len(sequence) == self.sequence_length:
+                labeled_windows[target] = (sequence, label)
 
-            features.append(seq_features)
+        samples = list(labeled_windows.values())
+        if len(samples) < 15:
+            raise ValueError(f"O treino aguarda 15 avaliações distintas com dados pareados válidos; disponíveis: {len(samples)}.")
+        label_counts = np.bincount([label for _, label in samples], minlength=3)
+        if np.any(label_counts < 5):
+            raise ValueError("Classifique ao menos 5 amostras como Boa, 5 como Média e 5 como Ruim antes do treino.")
 
-            # Label: baseado nas regras atuais
-            latency = target.get("latency_ms") or 0
-            jitter = target.get("jitter_ms") or 0
-            loss = target.get("packet_loss_percent") or 0
-
-            if jitter < 20 and latency < 100 and loss < 0.5:
-                labels.append(0)  # BOM
-            elif jitter < 30 and latency < 150 and loss < 1:
-                labels.append(1)  # MÉDIO
-            else:
-                labels.append(2)  # RUIM
-
-        features = np.array(features, dtype=np.float32)
-        labels = np.array(labels, dtype=np.int64)
-
-        # Normaliza features
+        features = np.asarray([sequence for sequence, _ in samples], dtype=np.float32)
+        labels = np.asarray([label for _, label in samples], dtype=np.int64)
         n_samples, n_steps, n_features = features.shape
-        features_reshaped = features.reshape(-1, n_features)
-        features_scaled = self.scaler.fit_transform(features_reshaped)
-        features = features_scaled.reshape(n_samples, n_steps, n_features)
-
-        return features, labels
-
+        scaled = self.scaler.fit_transform(features.reshape(-1, n_features))
+        return scaled.reshape(n_samples, n_steps, n_features), labels
     def train(
         self,
         machine_id: str,
@@ -154,6 +243,8 @@ class NetworkQualityTrainer:
         """
         # Prepara dados
         features, labels = self.prepare_data(machine_id, limit)
+        if len(features) < 5:
+            raise ValueError("Dados insuficientes: são necessárias pelo menos 5 janelas para treino, validação e teste.")
 
         # Dataset e DataLoader
         dataset = NetworkQualityDataset(features, labels)
@@ -170,7 +261,7 @@ class NetworkQualityTrainer:
         test_loader = DataLoader(test_dataset, batch_size=batch_size)
 
         # Modelo
-        model = NetworkQualityLSTM(input_features=8)
+        model = NetworkQualityLSTM(input_features=10)
         model = model.to(self.device)
 
         # Loss e optimizer
@@ -235,7 +326,7 @@ class NetworkQualityTrainer:
             # Early stopping
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
-                best_model_state = model.state_dict().copy()
+                best_model_state = deepcopy(model.state_dict())
                 patience_counter = 0
             else:
                 patience_counter += 1
@@ -246,6 +337,7 @@ class NetworkQualityTrainer:
         # Carrega melhor modelo
         if best_model_state:
             model.load_state_dict(best_model_state)
+        self.model = model
 
         # Avaliação final no teste
         model.eval()

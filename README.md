@@ -1,4 +1,4 @@
-# SupaDiag
+﻿# SupaDiag
 
 Monitoramento de latência, jitter e perda de pacotes com Supabase, dashboard Streamlit e alertas em tempo real.
 
@@ -90,20 +90,9 @@ SUPADIAG_DATA_DIR=data
 
 ### 3. Inicializar
 
-```bash
-.\start.ps1
-```
+Clique duas vezes em `start.bat` (ou execute `./start.bat` no PowerShell). O launcher ativa o `venv` da raiz, libera as portas 8202 e 8502, verifica e instala dependências ausentes/incompatíveis, inicia o coletor em segundo plano e abre o dashboard em `http://127.0.0.1:8502`.
 
-O script irá:
-1. Criar/ativar o ambiente virtual (venv)
-2. Instalar dependências
-3. Verificar o arquivo `.env`
-4. Instalar o serviço no Agendador de Tarefas do Windows (inicia na inicialização)
-5. Iniciar o monitor (coleta contínua) em **background**
-6. Abrir o dashboard Streamlit
-
-> **Nota**: Após o `.\start.ps1` executar, o monitor continua rodando em background. Você pode fechar todas as janelas (dashboard, PowerShell) que a coleta continua. O serviço é reiniciado automaticamente a cada boot do sistema via Agendador de Tarefas.
-
+O monitor continua rodando em segundo plano enquanto o dashboard estiver aberto. O launcher não instala uma tarefa automática no Agendador do Windows; use `supadiag service install` separadamente se desejar isso.
 ---
 
 ## Configuração (.env)
@@ -122,15 +111,14 @@ O script irá:
 
 | Comando | Descrição |
 |---------|-----------|
-| `start.bat` | Wrapper para start.ps1 (evita encoding) |
-| `start.ps1` | Script PowerShell principal (inicia em background) |
+| `start.bat` | Inicializa o ambiente, verifica dependências e abre o dashboard |
+| `start.ps1` | Implementação PowerShell do launcher principal |
 
 ### DASHBOARD / INTERFACE
 
 | Comando | Descrição |
 |---------|-----------|
-| `streamlit run dashboard.py --server.port 8501` | Dashboard principal (porta 8501) |
-| `cd FrontEnd && streamlit run app.py --server.port 8502` | FrontEnd com alertas (porta 8502) |
+| `start.bat` | FrontEnd Streamlit em `http://127.0.0.1:8502` |
 
 ### VERIFICAÇÃO
 
@@ -334,3 +322,4 @@ pip install -e ".[dev]"
 ## Licença
 
 MIT
+

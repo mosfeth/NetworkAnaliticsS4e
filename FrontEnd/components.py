@@ -41,7 +41,8 @@ def render_client_card(
     client: Client,
     local_machines: List[Dict[str, Any]],
     internet_machine: Optional[Dict[str, Any]],
-    on_click: callable
+    on_click: callable,
+    on_feedback: Optional[callable] = None,
 ) -> None:
     """
     Renderiza um card consolidado por cliente com:
@@ -164,7 +165,7 @@ def render_client_card(
         internet_status_label = status_detail
     
     # Card HTML
-card_html = f"""
+    card_html = f"""
 <div style="
     border: 1px solid #e0e0e0;
     border-radius: 12px;
@@ -302,6 +303,31 @@ card_html = f"""
         # Botão para ver detalhes do cliente
         if st.button(f"Ver detalhes: {client.name}", key=f"client_card_{client.id}", use_container_width=True):
             on_click(client.id)
+
+        # Feedback por equipamento: cada voto fica associado à máquina e à
+        # última amostra apresentada no card (rede local ou Internet).
+        if on_feedback:
+            feedback_machines = list(local_machines)
+            if internet_machine:
+                feedback_machines.append(internet_machine)
+            if feedback_machines:
+                st.markdown("**Como está a conexão?**")
+            for machine_data in feedback_machines:
+                machine = machine_data["machine"]
+                measurement = machine_data.get("latest_measurement")
+                st.caption(f"{machine.tag} · classifique a amostra atual")
+                feedback_cols = st.columns(3)
+                for col, (label, sentiment) in zip(
+                    feedback_cols,
+                    (("🟢 Boa", "bom"), ("🟡 Média", "medio"), ("🔴 Ruim", "ruim")),
+                ):
+                    if col.button(
+                        label,
+                        key=f"dashboard_feedback_{machine.id}_{sentiment}",
+                        use_container_width=True,
+                        disabled=not measurement,
+                    ):
+                        on_feedback(machine, sentiment, measurement)
 
 
 def render_machine_card(
@@ -506,6 +532,101 @@ def render_machine_card(
         # Botao para ver detalhes
         if st.button(f"Ver detalhes: {machine.tag}", key=f"card_{machine.id}", use_container_width=True):
             on_click(machine.id)
+
+
+def render_dashboard_machine_card(
+    machine: Machine,
+    client: Client,
+    latest_measurement: Optional[dict],
+    on_open: callable,
+    on_feedback: Optional[callable] = None,
+    internet_measurement: Optional[dict] = None,
+) -> None:
+    """One compact equipment card with local/internet signals and one overall rating."""
+    statuses = [(latest_measurement or {}).get("status", "")]
+    if internet_measurement:
+        statuses.append(internet_measurement.get("status", ""))
+    status = (
+        "unreachable" if "unreachable" in statuses
+        else "partial" if "partial" in statuses
+        else "ok" if "ok" in statuses
+        else ""
+    )
+    status_labels = {
+        "ok": ("Estável", "🟢"),
+        "partial": ("Atenção", "🟡"),
+        "unreachable": ("Crítico", "🔴"),
+    }
+    status_label, status_icon = status_labels.get(status, ("Sem dados", "⚪"))
+
+    def value_text(field: str, suffix: str) -> str:
+        value = latest_measurement.get(field) if latest_measurement else None
+        try:
+            return f"{float(value):.1f}{suffix}" if value is not None else "—"
+        except (TypeError, ValueError):
+            return "—"
+
+    with st.container(border=True):
+        title_col, status_col = st.columns([3, 1])
+        title_col.markdown(f"**{machine.tag}**")
+        status_col.markdown(f"{status_icon} {status_label}")
+        st.caption(f"{client.name} · {machine.ip}")
+
+        st.caption("Internet" if machine.tag == "INTERNET-CHECK" else "Rede local")
+        local_metrics = st.columns(3)
+        local_metrics[0].metric("Latência", value_text("latency_ms", " ms"))
+        local_metrics[1].metric("Jitter", value_text("jitter_ms", " ms"))
+        local_metrics[2].metric("Perda", value_text("packet_loss_percent", "%"))
+
+        if internet_measurement:
+            st.caption("Internet")
+            internet_metrics = st.columns(3)
+            for column, (field, label, suffix) in zip(
+                internet_metrics,
+                (("latency_ms", "Latência", " ms"), ("jitter_ms", "Jitter", " ms"),
+                 ("packet_loss_percent", "Perda", "%")),
+            ):
+                value = internet_measurement.get(field)
+                try:
+                    formatted = f"{float(value):.1f}{suffix}" if value is not None else "—"
+                except (TypeError, ValueError):
+                    formatted = "—"
+                column.metric(label, formatted)
+            internet_time = internet_measurement.get("measured_at")
+            if internet_time:
+                try:
+                    parsed_internet_time = pd.to_datetime(internet_time, utc=True).tz_convert("America/Sao_Paulo")
+                    st.caption(f"Amostra da Internet · {parsed_internet_time.strftime('%d/%m/%Y %H:%M:%S')}")
+                except (TypeError, ValueError):
+                    pass
+
+        measured_at = latest_measurement.get("measured_at") if latest_measurement else None
+        if measured_at:
+            try:
+                timestamp = pd.to_datetime(measured_at, utc=True).tz_convert("America/Sao_Paulo")
+                st.caption(f"Última amostra · {timestamp.strftime('%d/%m/%Y %H:%M:%S')}")
+            except (TypeError, ValueError):
+                st.caption("Última amostra disponível")
+        else:
+            st.caption("Aguardando a primeira amostra")
+
+        if on_feedback:
+            st.caption("Avalie a qualidade geral da conexão · rede local + Internet")
+            buttons = st.columns(3)
+            for column, (button_label, sentiment) in zip(
+                buttons,
+                (("🟢 Boa", "bom"), ("🟡 Média", "medio"), ("🔴 Ruim", "ruim")),
+            ):
+                if column.button(
+                    button_label,
+                    key=f"dashboard_feedback_{machine.id}_{sentiment}",
+                    use_container_width=True,
+                    disabled=not latest_measurement,
+                ):
+                    on_feedback(machine, sentiment, latest_measurement)
+
+        if st.button("Abrir análise", key=f"open_machine_{machine.id}", use_container_width=True):
+            on_open(client.id, machine.id)
 
 
 def _save_feedback(machine_id: str, label: str, measurement: Optional[dict]) -> None:

@@ -4,6 +4,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -56,11 +57,16 @@ def load_settings(root: Path | None = None) -> Settings:
     load_dotenv(root / ".env")
 
     supabase_url = os.getenv("SUPABASE_URL", "").strip()
-    supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    supabase_key = os.getenv("SUPABASE_SECRET_KEY", "").strip() or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
     if not supabase_url:
         raise ConfigError("SUPABASE_URL não está configurada. Copie .env.example para .env e preencha o arquivo.")
     if not supabase_key:
-        raise ConfigError("SUPABASE_SERVICE_ROLE_KEY não está configurada. Nunca compartilhe essa chave.")
+        raise ConfigError("Configure SUPABASE_SECRET_KEY (ou a chave legada SUPABASE_SERVICE_ROLE_KEY) no .env.")
+    parsed_url = urlparse(supabase_url)
+    if parsed_url.scheme != "https" or not parsed_url.hostname:
+        raise ConfigError("SUPABASE_URL inválida. Use https://<project-ref>.supabase.co.")
+    if supabase_key.startswith("sb_publishable_"):
+        raise ConfigError("Use uma chave sb_secret_ ou service_role em SUPABASE_SECRET_KEY; chave publishable não tem acesso administrativo.")
 
     data_dir = Path(os.getenv("SUPADIAG_DATA_DIR", "data")).expanduser()
     if not data_dir.is_absolute():

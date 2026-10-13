@@ -16,7 +16,6 @@ dependencies = [
 
 [project.optional-dependencies]
 ai = [
-    "fastai>=2.7",
     "torch>=2.0",
     "scikit-learn>=1.3",
 ]
