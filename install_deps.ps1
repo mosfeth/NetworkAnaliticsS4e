@@ -28,7 +28,7 @@ python -m pip install --upgrade pip >$null 2>&1
 
 # 3. Instala dependencias
 Write-Host "[3/3] Instalando dependencias do projeto..."
-pip install -e ".[dev,ai]"
+pip install -e .
 if ($LASTEXITCODE -ne 0) {
     Write-Error "ERRO: Falha na instalacao das dependencias."
     Read-Host "Pressione Enter para sair"
@@ -40,7 +40,8 @@ Write-Host "=========================================="
 Write-Host "  Dependencias instaladas com sucesso!"
 Write-Host "=========================================="
 Write-Host ""
-Write-Host "Para iniciar: .\start.bat"
-Write-Host "Para ajuda:   supadiag --help"
+Write-Host "Para iniciar o coletor: .\start.bat"
+Write-Host "Para iniciar o dashboard em outra maquina: FrontEnd\start.bat"
+Write-Host "Para ajuda: supadiag --help"
 Write-Host ""
 Read-Host "Pressione Enter para sair"

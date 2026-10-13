@@ -10,32 +10,24 @@ Monitoramento de latência, jitter e perda de pacotes com Supabase, dashboard St
 
 ## Visão Geral
 
-SupaDiag é uma ferramenta de monitoramento de rede que coleta métricas de latência, jitter e perda de pacotes de máquinas clientes, armazena no Supabase e exibe em um dashboard web interativo com alertas em tempo real.
+SupaDiag é uma ferramenta de monitoramento de rede. O coletor e o dashboard são aplicações independentes, podem rodar em máquinas diferentes e compartilham o Supabase como base de dados.
 
 ### Arquitetura
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                   SupaDiag CLI                       │
-│  (supadiag monitor, check, schema, diary, service)   │
-├──────────┬──────────┬──────────┬────────────────────┤
-│  ICMP    │  Tracer  │  Alertas │  Queue Local       │
-│  Ping    │  Route   │  Rules   │  pending_measure.  │
-└────┬─────┴────┬─────┴────┬─────┴────┬───────────────┘
-     │          │          │          │
-     ▼          ▼          ▼          ▼
-┌─────────────────────────────────────────────────────┐
-│                   Supabase (Cloud)                   │
-│  clients │ machines │ measurements │ traceroutes    │
-│  alert_rules │ alert_events        │ (RLS enabled)  │
-└────────────────────────┬────────────────────────────┘
-                         │
-                         ▼
-┌─────────────────────────────────────────────────────┐
-│              FrontEnd Streamlit                      │
-│  http://localhost:8502                               │
-│  Cards │ Métricas │ Traceroute │ Alertas            │
-└─────────────────────────────────────────────────────┘
+┌───────────────────────────┐       ┌───────────────────────────┐
+│ Máquina do coletor        │       │ Máquina do dashboard      │
+│ start.bat                 │       │ FrontEnd\start.bat         │
+│ venv próprio              │       │ venv próprio               │
+│ ICMP, internet, eventos   │       │ Streamlit :8502            │
+└─────────────┬─────────────┘       └─────────────┬─────────────┘
+              │ grava dados                       │ consulta e registra
+              └────────────────┬──────────────────┘ feedback
+                               ▼
+                    ┌─────────────────────┐
+                    │  Supabase (Cloud)   │
+                    │ base compartilhada  │
+                    └─────────────────────┘
 ```
 
 ---
@@ -90,9 +82,13 @@ SUPADIAG_DATA_DIR=data
 
 ### 3. Inicializar
 
-Clique duas vezes em `start.bat` (ou execute `./start.bat` no PowerShell). O launcher ativa o `venv` da raiz, libera as portas 8202 e 8502, verifica e instala dependências ausentes/incompatíveis, inicia o coletor em segundo plano e abre o dashboard em `http://127.0.0.1:8502`.
+Configure as duas partes nas máquinas em que serão executadas. Elas não iniciam uma à outra e não dependem de arquivos locais compartilhados; a comunicação de dados ocorre pelo mesmo projeto Supabase.
 
-O monitor continua rodando em segundo plano enquanto o dashboard estiver aberto. O launcher não instala uma tarefa automática no Agendador do Windows; use `supadiag service install` separadamente se desejar isso.
+**Máquina do coletor:** copie `.env.example` para `.env`, configure as credenciais do Supabase e inicie `start.bat`. O launcher cria/ativa o `venv` da raiz, instala apenas as dependências do coletor e mantém o monitor em primeiro plano. Esta máquina não precisa da pasta `FrontEnd`.
+
+**Máquina do dashboard:** disponibilize o projeto e inicie `FrontEnd\start.bat`. O launcher cria/ativa `FrontEnd\venv`, instala dependências de interface/IA e abre `http://127.0.0.1:8502`. Configure `FrontEnd\.env` a partir de `FrontEnd\.env.example` com acesso ao mesmo projeto Supabase. O `.env` da raiz também é aceito como fallback.
+
+O monitor não é iniciado pelo dashboard. Para inicialização automática do coletor no Windows, use `supadiag service install` na máquina do coletor.
 ---
 
 ## Configuração (.env)
@@ -100,7 +96,7 @@ O monitor continua rodando em segundo plano enquanto o dashboard estiver aberto.
 | Variável | Descrição | Padrão |
 |----------|-----------|--------|
 | `SUPABASE_URL` | URL do projeto Supabase | _(obrigatório)_ |
-| `SUPABASE_SERVICE_ROLE_KEY` | Chave service_role (NUNCA anon) | _(obrigatório)_ |
+| `SUPABASE_SECRET_KEY` ou `SUPABASE_SERVICE_ROLE_KEY` | Chave secreta/service_role usada pelos dois componentes | _(obrigatório)_ |
 | `SUPADIAG_DATA_DIR` | Diretório para dados locais | `./data` |
 
 ---
@@ -111,14 +107,14 @@ O monitor continua rodando em segundo plano enquanto o dashboard estiver aberto.
 
 | Comando | Descrição |
 |---------|-----------|
-| `start.bat` | Inicializa o ambiente, verifica dependências e abre o dashboard |
-| `start.ps1` | Implementação PowerShell do launcher principal |
+| `start.bat` | Inicia somente o coletor na máquina de coleta |
+| `start.ps1` | Implementação PowerShell do launcher do coletor |
 
 ### DASHBOARD / INTERFACE
 
 | Comando | Descrição |
 |---------|-----------|
-| `start.bat` | FrontEnd Streamlit em `http://127.0.0.1:8502` |
+| `FrontEnd\start.bat` | Inicia somente o dashboard em `http://127.0.0.1:8502` |
 
 ### VERIFICAÇÃO
 
@@ -198,7 +194,7 @@ Se ao clicar em um card aparecer erro `Failed to fetch dynamically imported modu
    - Chrome: `Ctrl+Shift+Delete` → "Imagens e arquivos em cache" → Limpar
    - Ou abra em **modo anônimo** (`Ctrl+Shift+N`)
 2. **Atualize forçadamente** a página: `Ctrl+Shift+R`
-3. Se persistir, **reinicie o Streamlit**: feche todas as janelas e execute `.\start.ps1` novamente
+3. Se persistir, **reinicie o Streamlit**: feche todas as janelas e execute `FrontEnd\start.bat` novamente
 
 ---
 
@@ -253,12 +249,13 @@ Se ao clicar em um card aparecer erro `Failed to fetch dynamically imported modu
 
 ```
 SupaDiag/
-├── FrontEnd/                    # Dashboard Streamlit (porta 8502)
+├── FrontEnd/                    # Dashboard independente (porta 8502, venv próprio)
 │   ├── app.py                   # Dashboard principal
 │   ├── components.py            # Componentes UI (cards, gráficos, alertas)
 │   ├── repository.py            # Acesso a dados Supabase
 │   ├── config.py                # Configurações
-│   ├── start.bat              # Launcher isolado Streamlit
+│   ├── start.bat                # Inicia somente o dashboard
+│   ├── .env.example             # Configuração Supabase do dashboard
 │   └── requirements.txt
 ├── src/supadiag/                # Módulos principais
 │   ├── cli.py                   # CLI (supadiag)
@@ -278,7 +275,7 @@ SupaDiag/
 ├── .env                         # Configuração local (não versionado)
 ├── .gitignore
 ├── pyproject.toml               # Dependências
-├── start.bat / start.ps1        # Launcher
+├── start.bat / start.ps1        # Inicia somente o coletor
 └── memory.txt                   # Diário do projeto
 ```
 
@@ -298,6 +295,8 @@ pytest
 pip install -e ".[dev]"
 ```
 
+Esse comando instala as dependências do coletor. O dashboard mantém seu próprio `FrontEnd/venv` e instala as dependências de interface e IA ao iniciar.
+
 ### Configurar Ambiente Virtual
 
 ```bash
@@ -310,12 +309,12 @@ pip install -e ".[dev]"
 
 ## Fluxo Típico
 
-1. Edite `.env` com credenciais do Supabase
-2. Execute `.\start.ps1` (abre monitor em background + dashboard)
-3. No dashboard Streamlit (`http://localhost:8502`): Adicione Clientes → Adicione Máquinas
-4. O monitor coleta automaticamente conforme frequência de cada máquina
-5. Acompanhe métricas em Métricas | Traceroute | Alertas
-6. Configure regras de alerta conforme necessidade
+1. Configure `.env` na máquina do coletor e `FrontEnd\.env` na máquina do dashboard, ambos apontando para o mesmo Supabase.
+2. Na máquina de coleta, execute `start.bat`.
+3. Na máquina do dashboard, execute `FrontEnd\start.bat`.
+4. No dashboard (`http://localhost:8502`), adicione clientes e máquinas.
+5. O monitor coleta automaticamente conforme frequência de cada máquina.
+6. Acompanhe métricas em Métricas | Traceroute | Alertas e configure as regras conforme necessidade.
 
 ---
 

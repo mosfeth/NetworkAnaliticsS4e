@@ -239,10 +239,7 @@ def on_machine_card_click(client_id: str, machine_id: str) -> None:
 
 def run_traceroute_cli(machine_id: str) -> bool:
     """Executa traceroute via CLI e retorna True se sucesso."""
-    project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    venv_python = os.path.join(project_dir, "venv", "Scripts", "python.exe")
-    if not os.path.exists(venv_python):
-        venv_python = "python"
+    venv_python = sys.executable
     try:
         with st.spinner(f"🔍 Executando traceroute..."):
             result = subprocess.run(
@@ -653,10 +650,7 @@ def _render_advanced_client_detail(repo: FrontendRepository, client_id: str) -> 
             with col_train:
                 if st.button("🚀 Treinar Modelo", key=f"train_{target_for_prediction.id}", use_container_width=True):
                     try:
-                        project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                        venv_python = os.path.join(project_dir, "venv", "Scripts", "python.exe")
-                        if not os.path.exists(venv_python):
-                            venv_python = "python"
+                        venv_python = sys.executable
                         with st.spinner(f"Treinando modelo para {target_for_prediction.tag}..."):
                             result = subprocess.run(
                                 [venv_python, "-m", "supadiag", "ml-train", "--machine-id", target_for_prediction.id, "--epochs", "50"],

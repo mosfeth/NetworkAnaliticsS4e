@@ -29,6 +29,7 @@ Thumbs.db
 
 # Data / Logs
 data/
+FrontEnd/data/
 *.log
 debug_tui.log
 
