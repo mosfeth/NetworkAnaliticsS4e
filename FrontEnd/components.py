@@ -698,6 +698,13 @@ def render_metrics_charts(measurements: list[dict], machine_tag: str, key_suffix
         subplot_titles=("Latência e Jitter (ms)", "Perda de Pacotes (%)"),
         row_heights=[0.65, 0.35]
     )
+
+    if df["latency_ms"].dropna().empty and df["jitter_ms"].dropna().empty:
+        fig.add_annotation(
+            text="Sem respostas ao ping: latência e jitter não podem ser calculados.",
+            xref="paper", yref="paper", x=0.5, y=0.73,
+            showarrow=False, font={"color": "#6b7280", "size": 13},
+        )
     
     # Latência
     fig.add_trace(

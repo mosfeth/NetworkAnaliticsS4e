@@ -274,7 +274,7 @@ class SupabaseRepository:
             machine_id=str(row["machine_id"]),
             latency_ms=_optional_float(row.get("latency_ms")),
             jitter_ms=_optional_float(row.get("jitter_ms")),
-            packet_loss_percent=float(row.get("packet_loss_percent") or 0),
+            packet_loss_percent=_optional_float(row.get("packet_loss_percent")),
             packets_sent=int(row.get("packets_sent") or 0),
             packets_received=int(row.get("packets_received") or 0),
             status=str(row.get("status") or "unknown"),

@@ -179,7 +179,7 @@ class FrontendRepository:
         hours: int = 24,
         limit: int = 500
     ) -> list[dict]:
-        """Busca medições de uma máquina nas últimas N horas."""
+        """Busca todas as medições, inclusive amostras sem resposta, nas últimas N horas."""
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
         
         data = self._execute(
@@ -190,13 +190,12 @@ class FrontendRepository:
             .order("measured_at", desc=False)
             .limit(limit)
         )
-        data = [m for m in data if m.get("status") in REACHABLE_STATUSES]
         return data
 
     def get_measurements_between(
         self, machine_id: str, start_at: str, end_at: str, limit: int = 20000
     ) -> list[dict]:
-        """Busca medições alcançáveis de uma máquina em um intervalo exato."""
+        """Busca todas as medições, inclusive amostras sem resposta, no intervalo exato."""
         data = []
         for offset in range(0, limit, 1000):
             page_end = min(offset + 999, limit - 1)
@@ -212,7 +211,7 @@ class FrontendRepository:
             data.extend(page)
             if len(page) < page_end - offset + 1:
                 break
-        return [m for m in data if m.get("status") in REACHABLE_STATUSES]
+        return data
     
     def get_latest_measurement(self, machine_id: str) -> dict | None:
         """Retorna a medição mais recente de uma máquina."""

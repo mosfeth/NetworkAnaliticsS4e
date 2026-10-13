@@ -5,9 +5,14 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Callable
 
 from .models import MeasurementSample
+
+
+class ProbeExecutionError(RuntimeError):
+    """Raised when the local ping process itself could not run."""
 
 
 @dataclass(frozen=True)
@@ -30,6 +35,7 @@ def _build_sample(client_id: str, machine_id: str, result: ProbeResult) -> Measu
         packets_sent=result.packets_sent,
         packets_received=result.packets_received,
         status=result.status,
+        measured_at=datetime.now(timezone.utc).isoformat(),
     )
 
 
@@ -44,8 +50,8 @@ def _run_ping_windows(ip: str, count: int, timeout_ms: int) -> list[int]:
             timeout=(count * timeout_ms / 1000) + 10,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
-    except (OSError, subprocess.SubprocessError):
-        return []
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ProbeExecutionError(f"Não foi possível executar ping para {ip}: {exc}") from exc
     
     round_trips: list[int] = []
     # Parse each line for RTT (handles Portuguese "tempo" and English "time")
@@ -67,8 +73,8 @@ def _run_ping_unix(ip: str, count: int, timeout_ms: int) -> list[int]:
             text=True,
             timeout=(count * timeout_s) + 10,
         )
-    except (OSError, subprocess.SubprocessError):
-        return []
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ProbeExecutionError(f"Não foi possível executar ping para {ip}: {exc}") from exc
     
     round_trips: list[int] = []
     for line in completed.stdout.splitlines():

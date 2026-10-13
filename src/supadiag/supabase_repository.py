@@ -184,7 +184,21 @@ class SupabaseRepository:
 
     def save_measurement(self, sample: MeasurementSample) -> None:
         payload = sample.as_insert()
-        self._execute(self.client.table("measurements").insert(payload))
+        self._execute(
+            self.client.table("measurements").upsert(payload, on_conflict="id")
+        )
+
+    def get_latest_reachability_status(self, machine_id: str) -> str | None:
+        """Return the latest actual probe state, ignoring collector errors."""
+        data = self._execute(
+            self.client.table("measurements")
+            .select("status")
+            .eq("machine_id", machine_id)
+            .in_("status", ["ok", "partial", "unreachable"])
+            .order("measured_at", desc=True)
+            .limit(1)
+        ) or []
+        return data[0].get("status") if data else None
 
     def latest_measurements(self, limit: int = 50) -> list[dict]:
         data = self._execute(

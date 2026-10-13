@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from ipaddress import ip_address
 from typing import Any
+import uuid
 
 
 @dataclass(frozen=True)
@@ -31,7 +32,7 @@ class Measurement:
     machine_id: str
     latency_ms: float | None
     jitter_ms: float | None
-    packet_loss_percent: float
+    packet_loss_percent: float | None
     packets_sent: int
     packets_received: int
     status: str
@@ -44,14 +45,18 @@ class MeasurementSample:
     machine_id: str
     latency_ms: float | None
     jitter_ms: float | None
-    packet_loss_percent: float
+    packet_loss_percent: float | None
     packets_sent: int
     packets_received: int
     status: str
     measured_at: str | None = None
+    sample_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
     def as_insert(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
+            # Reuse the measurements table's existing primary key as an
+            # idempotency key. A retry of the same sample then becomes an upsert.
+            "id": self.sample_id,
             "client_id": self.client_id,
             "machine_id": self.machine_id,
             "latency_ms": self.latency_ms,

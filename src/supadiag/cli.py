@@ -109,12 +109,14 @@ def cmd_check(args: argparse.Namespace) -> int:
 
 
 def cmd_schema(args: argparse.Namespace) -> int:
-    path = Path(__file__).resolve().parents[2] / "sql" / "001_schema.sql"
-    print(f"Script de migração: {path}")
-    if path.exists():
+    schema_dir = Path(__file__).resolve().parents[2] / "sql"
+    paths = sorted(schema_dir.glob("*.sql"))
+    if not paths:
+        print(f"Nenhum script SQL encontrado em: {schema_dir}")
+        return 1
+    for path in paths:
+        print(f"\n--- {path.name} ---")
         print(path.read_text(encoding="utf-8"))
-    else:
-        print("Arquivo não encontrado.")
     return 0
 
 
@@ -172,15 +174,8 @@ def cmd_monitor(args: argparse.Namespace) -> int:
     if args.once:
         asyncio.run(monitor.run_cycle())
     else:
-        cycles = args.cycles
-        async def run():
-            for _ in range(cycles) if cycles else iter(int, 1):
-                if monitor._stop.is_set():
-                    break
-                await monitor.run_cycle()
-                await asyncio.sleep(1)
         try:
-            asyncio.run(run())
+            asyncio.run(monitor.run_forever(args.cycles))
         except KeyboardInterrupt:
             print("Monitor interrompido")
     return 0

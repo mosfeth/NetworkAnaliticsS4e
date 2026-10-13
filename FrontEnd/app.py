@@ -355,9 +355,9 @@ def get_sidebar_events(repo: FrontendRepository, limit: int = 30) -> list[dict]:
             elif status == "error":
                 events.append({
                     "timestamp": measured,
-                    "event": "ERROR",
-                    "message": f"[CRITICAL] {machine_tag}: ERRO",
-                    "severity": "critical",
+                    "event": "COLLECTOR_ERROR",
+                    "message": f"[COLLECTOR] {machine_tag}: falha na coleta; conectividade não determinada",
+                    "severity": "warning",
                 })
             else:
                 events.append({
@@ -857,7 +857,11 @@ def _render_advanced_client_detail(repo: FrontendRepository, client_id: str) -> 
 
 def _quality_frame(measurements: list[dict], events: list[dict], source: str) -> pd.DataFrame:
     rows = []
+    measurement_stamps = set()
     for measurement in measurements:
+        stamp = pd.to_datetime(measurement.get("measured_at"), errors="coerce", utc=True)
+        if pd.notna(stamp):
+            measurement_stamps.add(stamp)
         rows.append({
             "timestamp": measurement.get("measured_at"),
             "source": source,
@@ -867,6 +871,9 @@ def _quality_frame(measurements: list[dict], events: list[dict], source: str) ->
             "status": measurement.get("status", ""),
         })
     for event in events:
+        event_stamp = pd.to_datetime(event.get("measured_at"), errors="coerce", utc=True)
+        if pd.notna(event_stamp) and event_stamp in measurement_stamps:
+            continue
         event_type = event.get("event_type", "")
         loss = event.get("packet_loss_percent")
         if loss is None:
@@ -896,7 +903,7 @@ def _quality_chart(local: pd.DataFrame, internet: pd.DataFrame, title: str) -> N
         ("jitter_ms", "Jitter", "ms", 30, 50),
         ("packet_loss_percent", "Perda de pacotes", "%", 2, 5),
     ]
-    colors = {"Local": "#2563eb", "Internet": "#06b6d4"}
+    colors = {"Local": "#60a5fa", "Internet": "#22d3ee"}
     frames = {"Local": local, "Internet": internet}
     fig = make_subplots(
         rows=3,
@@ -910,13 +917,17 @@ def _quality_chart(local: pd.DataFrame, internet: pd.DataFrame, title: str) -> N
         for name, frame in frames.items():
             if frame.empty or frame[field].dropna().empty:
                 continue
-            color = colors[name]
+            is_loss = field == "packet_loss_percent"
+            color = ("#fb7185" if name == "Local" else "#fbbf24") if is_loss else colors[name]
             values = frame.dropna(subset=[field])
             fig.add_trace(
                 go.Scatter(
                     x=values["timestamp"], y=values[field], mode="lines+markers",
                     name=f"{name} · {label.lower()}", legendgroup=name,
-                    line={"color": color, "width": 1.5}, marker={"size": 4},
+                    line={"color": color, "width": 2.8 if is_loss else 2},
+                    marker={"size": 6 if is_loss else 4},
+                    fill="tozeroy" if is_loss else None,
+                    fillcolor=("rgba(251, 113, 133, 0.20)" if name == "Local" else "rgba(251, 191, 36, 0.18)") if is_loss else None,
                     hovertemplate=f"%{{x|%d/%m %H:%M:%S}}<br>{name}: %{{y:.2f}} {unit}<extra></extra>",
                 ), row=row, col=1,
             )
@@ -936,13 +947,34 @@ def _quality_chart(local: pd.DataFrame, internet: pd.DataFrame, title: str) -> N
         fig.add_hline(y=critical, line_dash="dot", line_color="#dc2626", opacity=0.7,
                       annotation_text=f"Crítico {critical} {unit}", annotation_position="bottom left", row=row, col=1)
         fig.update_yaxes(title_text=unit, rangemode="tozero", row=row, col=1)
-    fig.update_xaxes(title_text="Horário local · São Paulo", showgrid=True, row=3, col=1, rangeslider_visible=True)
+    if all(frame.empty or frame["latency_ms"].dropna().empty for frame in frames.values()) and all(
+        frame.empty or frame["jitter_ms"].dropna().empty for frame in frames.values()
+    ):
+        fig.add_annotation(
+            text="Sem respostas ao ping: latência e jitter não podem ser calculados.",
+            x=0.5, y=0.76, xref="paper", yref="paper", showarrow=False,
+            font={"color": "#cbd5e1", "size": 14},
+            bgcolor="rgba(15, 23, 42, 0.82)", borderpad=6,
+        )
+    loss_max = max(
+        (float(frame["packet_loss_percent"].max()) for frame in frames.values()
+         if not frame.empty and frame["packet_loss_percent"].notna().any()),
+        default=0.0,
+    )
+    fig.update_xaxes(
+        title_text="Horário local · São Paulo", showgrid=True, gridcolor="#334155",
+        tickfont={"color": "#cbd5e1"}, title_font={"color": "#cbd5e1"},
+        row=3, col=1, rangeslider_visible=True,
+    )
+    fig.update_yaxes(gridcolor="#334155", tickfont={"color": "#cbd5e1"})
+    fig.update_yaxes(range=[0, max(10, min(110, loss_max * 1.1))], row=3, col=1)
     fig.update_layout(
         title={"text": title, "x": 0.02, "xanchor": "left"},
-        height=690, template="plotly_white", hovermode="x unified",
+        height=690, template="plotly_dark", hovermode="x unified",
         margin={"l": 20, "r": 25, "t": 75, "b": 30},
         legend={"orientation": "h", "y": 1.03, "x": 1, "xanchor": "right"},
-        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(15,23,42,0.35)",
+        font={"color": "#e2e8f0"},
     )
     st.plotly_chart(fig, use_container_width=True, key=f"quality_{title}")
 
@@ -1186,11 +1218,16 @@ def _render_link_summary(label: str, frame: pd.DataFrame) -> None:
         st.error(f"Conexão sem resposta na última amostra · {latest['timestamp'].strftime('%d/%m %H:%M:%S')}")
     elif status in ("partial", "packet_loss"):
         st.warning(f"Perda de conectividade detectada · {latest['timestamp'].strftime('%d/%m %H:%M:%S')}")
+    elif status == "error":
+        st.warning(f"Falha na coleta da última amostra; não há dados para concluir o estado da conexão · {latest['timestamp'].strftime('%d/%m %H:%M:%S')}")
     else:
         st.caption(f"Última amostra: {latest['timestamp'].strftime('%d/%m/%Y %H:%M:%S')}")
 
 
 def _degradation_signals(label: str, frame: pd.DataFrame) -> tuple[list[str], bool]:
+    # A local collector failure has no network metrics and must not count as
+    # a healthy zero-loss observation or distort the baseline window.
+    frame = frame[frame["status"] != "error"]
     if len(frame) < 8:
         return [], False
     split = max(2, int(len(frame) * 0.75))
@@ -1371,13 +1408,34 @@ def render_client_detail(repo: FrontendRepository, client_id: str) -> None:
     )
     with local_tab:
         st.markdown(f"### Rede local · {local_machine.tag if local_machine else 'indisponível'}")
-        local_signals, enough_local_data = _degradation_signals("Rede local", local_frame)
-        if local_signals:
-            st.warning("Sinais recentes: " + " · ".join(local_signals))
-        elif enough_local_data:
-            st.success("Sem aumento sustentado detectado na rede local nesta janela.")
-        else:
-            st.info("Ainda são necessárias mais amostras para estabelecer uma linha de base local.")
+        latest_local_has_loss = False
+        latest_local_collection_error = False
+        if not local_frame.empty:
+            latest_local = local_frame.iloc[-1]
+            latest_local_collection_error = latest_local.get("status") == "error"
+            latest_local_has_loss = (
+                latest_local.get("status") in ("unreachable", "packet_loss")
+                and float(latest_local.get("packet_loss_percent") or 0) > 0
+            )
+            if latest_local_collection_error:
+                st.warning(
+                    "Falha no processo de coleta da última amostra local. "
+                    "Isso não confirma perda na rede; latência, jitter e perda estão indeterminados."
+                )
+            if latest_local_has_loss:
+                st.error(
+                    "O Supabase recebeu a amostra local, mas houve perda de conectividade: "
+                    f"{_metric_text(latest_local.get('packet_loss_percent'), '%')}. "
+                    "Quando nenhum ping recebe resposta, latência e jitter ficam indisponíveis."
+                )
+        if not latest_local_has_loss and not latest_local_collection_error:
+            local_signals, enough_local_data = _degradation_signals("Rede local", local_frame)
+            if local_signals:
+                st.warning("Sinais recentes: " + " · ".join(local_signals))
+            elif enough_local_data:
+                st.success("Sem aumento sustentado detectado na rede local nesta janela.")
+            else:
+                st.info("Ainda são necessárias mais amostras para estabelecer uma linha de base local.")
         _render_link_summary("Resumo da rede local", local_frame)
         _quality_chart(local_frame, pd.DataFrame(columns=local_frame.columns), f"Rede local · {period_label}")
         st.caption("Linhas tracejadas indicam limites de atenção e críticos; a linha espessa mostra a mediana móvel de 5 amostras.")
@@ -1395,11 +1453,19 @@ def render_client_detail(repo: FrontendRepository, client_id: str) -> None:
                 st.info("Sem amostras de internet dentro do horário de trabalho configurado.")
             else:
                 current = current_frame.iloc[-1]
+                reachable = current_frame[current_frame["status"].isin(["ok", "partial"])]
+                latest_response = reachable.iloc[-1] if not reachable.empty else None
                 current_cols = st.columns(3)
-                current_cols[0].metric("Latência atual", _metric_text(current["latency_ms"], " ms"))
-                current_cols[1].metric("Jitter atual", _metric_text(current["jitter_ms"], " ms"))
+                current_cols[0].metric("Latência da última resposta", _metric_text(latest_response["latency_ms"] if latest_response is not None else None, " ms"))
+                current_cols[1].metric("Jitter da última resposta", _metric_text(latest_response["jitter_ms"] if latest_response is not None else None, " ms"))
                 current_cols[2].metric("Perda atual", _metric_text(current["packet_loss_percent"], "%"))
-                st.caption(f"Última amostra com resposta: {current['timestamp'].strftime('%d/%m/%Y %H:%M:%S')} · horário de São Paulo")
+                if latest_response is not None:
+                    st.caption(f"Última resposta: {latest_response['timestamp'].strftime('%d/%m/%Y %H:%M:%S')} · horário de São Paulo")
+                if current.get("status") == "unreachable":
+                    st.error(
+                        f"A última amostra não recebeu resposta · {current['timestamp'].strftime('%d/%m/%Y %H:%M:%S')} · "
+                        f"perda {_metric_text(current['packet_loss_percent'], '%')}"
+                    )
             current_events = _filter_records_to_work_schedule(
                 _cached_quality_events(internet_machine.id, 24), internet_schedule
             )

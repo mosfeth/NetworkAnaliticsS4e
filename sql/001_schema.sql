@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS public.measurements (
     machine_id uuid NOT NULL REFERENCES public.machines(id) ON DELETE CASCADE,
     latency_ms numeric,
     jitter_ms numeric,
-    packet_loss_percent numeric NOT NULL,
+    packet_loss_percent numeric,
     packets_sent int NOT NULL,
     packets_received int NOT NULL,
     status text NOT NULL CHECK (status IN ('ok', 'partial', 'unreachable', 'error')),
