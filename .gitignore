@@ -31,7 +31,6 @@ Thumbs.db
 data/
 *.log
 debug_tui.log
-memory.txt
 
 # Test artifacts
 .pytest_cache/
