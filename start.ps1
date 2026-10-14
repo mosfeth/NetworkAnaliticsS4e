@@ -61,8 +61,9 @@ try {
 }
 
 if ($activeMonitors.Count -gt 0) {
-    $ids = ($activeMonitors | ForEach-Object { $_.ProcessId }) -join ', '
-    Write-Host "O coletor já está ativo (PID $ids). Nenhuma segunda instância foi iniciada." -ForegroundColor Yellow
+    Write-Host 'O coletor já está ativo. Nenhuma segunda instância foi iniciada.' -ForegroundColor Yellow
+    Write-Host 'As medições continuam sendo coletadas pela instância existente. Confira os eventos recentes em memory.txt.' -ForegroundColor DarkGray
+    Read-Host 'Pressione Enter para fechar esta janela'
     exit 0
 }
 

@@ -575,3 +575,25 @@
 2026-10-13 17:45:22 | INTERNET_CHECK_OK | Verificação internet Aperam_Volvo | client_id=87dcf70a-6b2e-4746-bcd0-43f61d3b89ec, latency=13.75, loss=0.0
 2026-10-13 17:45:26 | INTERNET_CHECK_OK | Verificação internet Komatsu_3Lagoas | client_id=dd69c5b8-92e2-4eb4-9d65-483e3554a698, latency=13.75, loss=0.0
 2026-10-13 | DASHBOARD UX: métricas dentro dos cards da visão geral receberam tipografia menor e menos padding, com CSS escopado por card; layout dos detalhes permanece igual.
+2026-10-13 17:50:20 | MEDICAO_OK | Medição enviada para c1f03655-a577-407f-8aa7-599b7f657545 | machine_id=c1f03655-a577-407f-8aa7-599b7f657545, latency=14.5
+2026-10-13 17:50:20 | MEDICAO_OK | Medição enviada para dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa | machine_id=dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa, latency=14.75
+2026-10-13 17:50:24 | INTERNET_CHECK_OK | Verificação internet Aperam_Volvo | client_id=87dcf70a-6b2e-4746-bcd0-43f61d3b89ec, latency=15.5, loss=0.0
+2026-10-13 17:50:27 | INTERNET_CHECK_OK | Verificação internet Komatsu_3Lagoas | client_id=dd69c5b8-92e2-4eb4-9d65-483e3554a698, latency=14.75, loss=0.0
+2026-10-13 17:55:20 | MEDICAO_OK | Medição enviada para c1f03655-a577-407f-8aa7-599b7f657545 | machine_id=c1f03655-a577-407f-8aa7-599b7f657545, latency=15.25
+2026-10-13 17:55:20 | MEDICAO_OK | Medição enviada para dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa | machine_id=dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa, latency=14.25
+2026-10-13 17:55:24 | INTERNET_CHECK_OK | Verificação internet Aperam_Volvo | client_id=87dcf70a-6b2e-4746-bcd0-43f61d3b89ec, latency=14.0, loss=0.0
+2026-10-13 17:55:27 | INTERNET_CHECK_OK | Verificação internet Komatsu_3Lagoas | client_id=dd69c5b8-92e2-4eb4-9d65-483e3554a698, latency=14.5, loss=0.0
+2026-10-13 18:00:21 | MEDICAO_OK | Medição enviada para c1f03655-a577-407f-8aa7-599b7f657545 | machine_id=c1f03655-a577-407f-8aa7-599b7f657545, latency=14.5
+2026-10-13 18:00:21 | MEDICAO_OK | Medição enviada para dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa | machine_id=dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa, latency=14.5
+2026-10-13 18:00:25 | INTERNET_CHECK_OK | Verificação internet Aperam_Volvo | client_id=87dcf70a-6b2e-4746-bcd0-43f61d3b89ec, latency=14.25, loss=0.0
+2026-10-13 18:00:29 | INTERNET_CHECK_OK | Verificação internet Komatsu_3Lagoas | client_id=dd69c5b8-92e2-4eb4-9d65-483e3554a698, latency=14.5, loss=0.0
+2026-10-13 18:27:11 | TRACEROUTE_OK | Traceroute Carretinha (192.168.101.1) | machine_id=b94c8414-3766-4225-b5f7-bb0635eddfb3, total_hops=0, destination_reached=False
+2026-10-14 08:38:19 | MEDICAO_OK | Medição enviada para c1f03655-a577-407f-8aa7-599b7f657545 | machine_id=c1f03655-a577-407f-8aa7-599b7f657545, latency=22.5
+2026-10-14 08:38:19 | MEDICAO_OK | Medição enviada para dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa | machine_id=dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa, latency=25.25
+2026-10-14 08:38:23 | INTERNET_CHECK_OK | Verificação internet Aperam_Volvo | client_id=87dcf70a-6b2e-4746-bcd0-43f61d3b89ec, latency=11.0, loss=0.0
+2026-10-14 08:38:26 | INTERNET_CHECK_OK | Verificação internet Komatsu_3Lagoas | client_id=dd69c5b8-92e2-4eb4-9d65-483e3554a698, latency=19.75, loss=0.0
+2026-10-14 08:41:26 | MEDICAO_OK | Medição enviada para c1f03655-a577-407f-8aa7-599b7f657545 | machine_id=c1f03655-a577-407f-8aa7-599b7f657545, latency=22.5
+2026-10-14 08:41:27 | MEDICAO_OK | Medição enviada para dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa | machine_id=dfb7a9d7-54c7-4c45-9509-9a7fbc858eaa, latency=22.75
+2026-10-14 08:41:30 | INTERNET_CHECK_OK | Verificação internet Aperam_Volvo | client_id=87dcf70a-6b2e-4746-bcd0-43f61d3b89ec, latency=22.0, loss=0.0
+2026-10-14 08:41:34 | INTERNET_CHECK_OK | Verificação internet Komatsu_3Lagoas | client_id=dd69c5b8-92e2-4eb4-9d65-483e3554a698, latency=21.25, loss=0.0
+2026-10-14 | STARTUP VALIDATION: start.bat criou/ativou venv, pip check passou, monitor iniciou e registrou medições; segunda abertura detectou a instância ativa e aguardou confirmação sem iniciar outra. Processos de validação foram encerrados.
