@@ -33,6 +33,9 @@ FrontEnd/data/
 *.log
 debug_tui.log
 
+# ML model artifacts (persisted in Supabase)
+models/
+
 # Test artifacts
 .pytest_cache/
 .coverage

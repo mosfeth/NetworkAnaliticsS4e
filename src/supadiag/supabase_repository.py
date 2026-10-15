@@ -458,3 +458,104 @@ class SupabaseRepository:
     def get_ai_events(self, limit: int = 20) -> list[dict]:
         """Retorna eventos de treinamento/IA (placeholder - integrar com tabela de logs de treino)."""
         return []
+
+    # ========== ML MODEL WEIGHTS METHODS ==========
+
+    @staticmethod
+    def ml_model_name(machine_id: str) -> str:
+        """Nome canônico do modelo de qualidade de rede de um equipamento."""
+        return f"network_quality_{machine_id}"
+
+    def save_model_weights(
+        self,
+        model_name: str,
+        model_version: str,
+        weights: dict,
+        accuracy: float | None = None,
+    ) -> dict | None:
+        """Persiste os pesos de um modelo no Supabase (nunca sobrescreve: cria versão)."""
+        data = {
+            "model_name": model_name,
+            "model_version": model_version,
+            "weights": weights,
+            "accuracy": accuracy,
+        }
+        result = self._execute(self.client.table("ml_model_weights").insert(data))
+        return result[0] if result else None
+
+    def list_model_weights(self, model_name: str, limit: int = 50) -> list[dict]:
+        """Lista versões de pesos salvas de um modelo, da melhor para a pior."""
+        query = (
+            self.client.table("ml_model_weights")
+            .select("id, model_name, model_version, accuracy, trained_at, created_at")
+            .eq("model_name", model_name)
+            .limit(limit)
+        )
+        rows = self._execute(query) or []
+        return sorted(
+            rows,
+            key=lambda row: (row.get("accuracy") is not None, row.get("accuracy") or 0.0),
+            reverse=True,
+        )
+
+    def get_best_model_weights(self, model_name: str) -> dict | None:
+        """Retorna a versão de maior acurácia já salva no Supabase (sem os pesos)."""
+        versions = self.list_model_weights(model_name, limit=50)
+        return versions[0] if versions else None
+
+    def get_model_weights_payload(self, model_name: str, preferred_version: str | None = None) -> dict | None:
+        """Retorna o payload completo (pesos + normalizador + métricas) de um modelo."""
+        query = (
+            self.client.table("ml_model_weights")
+            .select("*")
+            .eq("model_name", model_name)
+            .limit(1)
+        )
+        if preferred_version:
+            query = (
+                self.client.table("ml_model_weights")
+                .select("*")
+                .eq("model_name", model_name)
+                .eq("model_version", preferred_version)
+                .limit(1)
+            )
+        result = self._execute(query) or []
+        if not result:
+            return None
+        row = result[0]
+        payload = row.get("weights")
+        if isinstance(payload, dict):
+            return payload
+        return None
+
+    def get_best_model_weights_payload(self, model_name: str) -> tuple[dict, dict] | None:
+        """Retorna (payload, linha) da melhor versão válida de pesos salva no Supabase."""
+        for candidate in self.list_model_weights(model_name, limit=50):
+            payload = self.get_model_weights_payload(model_name, candidate.get("model_version"))
+            if payload is None:
+                continue
+            if "state_dict" not in payload or not payload.get("state_dict"):
+                continue
+            return payload, candidate
+        return None
+
+    def save_training_history(
+        self,
+        model_name: str,
+        model_version: str,
+        training_samples: int,
+        accuracy: float | None = None,
+        training_duration_seconds: float | None = None,
+        metadata: dict | None = None,
+    ) -> dict | None:
+        """Registra uma execução de treino no histórico do Supabase."""
+        data = {
+            "model_name": model_name,
+            "model_version": model_version,
+            "training_samples": training_samples,
+            "accuracy": accuracy,
+            "training_duration_seconds": training_duration_seconds,
+            "metadata": metadata or {},
+        }
+        result = self._execute(self.client.table("ml_training_history").insert(data))
+        return result[0] if result else None

@@ -59,7 +59,7 @@ class NetworkQualityLSTM(nn.Module):
     def predict_class(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Prediz classe e probabilidade.
-        
+
         Returns:
             (classes, probabilidades)
         """
@@ -68,3 +68,13 @@ class NetworkQualityLSTM(nn.Module):
             probs = torch.softmax(self.forward(x), dim=1)
             classes = torch.argmax(probs, dim=1)
         return classes, probs
+
+
+def state_dict_to_jsonable(state_dict: dict) -> dict:
+    """Converte um state_dict do PyTorch em estrutura JSON-serializável (listas)."""
+    return {name: tensor.detach().cpu().tolist() for name, tensor in state_dict.items()}
+
+
+def jsonable_to_state_dict(payload: dict) -> dict:
+    """Converte listas do Supabase de volta para tensores do PyTorch."""
+    return {name: torch.tensor(values) for name, values in payload.items()}

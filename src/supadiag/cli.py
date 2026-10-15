@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 import time
 from pathlib import Path
@@ -283,8 +284,10 @@ def cmd_ml_train(args: argparse.Namespace) -> int:
     print(f"Épocas: {args.epochs}, Batch: {args.batch_size}, Limit: {args.limit}")
     
     from .ml_trainer import NetworkQualityTrainer
+    from .ml_model import state_dict_to_jsonable
     trainer = NetworkQualityTrainer(settings, repo)
-    
+
+    started_at = time.time()
     try:
         result = trainer.train(
             machine_id=machine_id,
@@ -292,38 +295,26 @@ def cmd_ml_train(args: argparse.Namespace) -> int:
             batch_size=args.batch_size,
             limit=args.limit,
         )
-        print(f"\n✅ Treino concluído!")
+        duration = time.time() - started_at
+        print("\n[OK] Treino concluído!")
         print(f"  Épocas treinadas: {result.epochs_trained}")
         print(f"  Acurácia teste: {result.accuracy:.2%}")
         print(f"  F1-score: {result.f1_score:.2%}")
         print(f"  Acurácia validação: {result.val_accuracy:.2%}")
         print(f"  Melhor validação loss: {result.best_val_loss:.4f}")
-        
-        # Salva modelo
+        print(f"  Duração: {duration:.1f}s")
+
+        if trainer.model is None:
+            raise RuntimeError("O treinamento terminou sem produzir um modelo.")
+
         from pathlib import Path
         output_dir = Path(args.output)
         if not output_dir.is_absolute():
             output_dir = settings.project_root / output_dir
         output_dir.mkdir(parents=True, exist_ok=True)
         model_path = output_dir / f"model_{machine_id[:8]}.pth"
-        import torch
-        if trainer.model is None:
-            raise RuntimeError("O treinamento terminou sem produzir um modelo.")
-        torch.save(
-            {
-                "state_dict": trainer.model.state_dict(),
-                "scaler_mean": trainer.scaler.mean_.tolist(),
-                "scaler_scale": trainer.scaler.scale_.tolist(),
-                "machine_id": machine_id,
-                "trained_at": result.trained_at,
-            },
-            model_path,
-        )
-        print(f"\n💾 Modelo salvo em: {model_path}")
-        
-        # Salva métricas
-        metrics_path = output_dir / f"metrics_{machine_id[:8]}.json"
-        metrics_data = {
+
+        metrics = {
             "accuracy": result.accuracy,
             "f1_score": result.f1_score,
             "val_accuracy": result.val_accuracy,
@@ -333,14 +324,91 @@ def cmd_ml_train(args: argparse.Namespace) -> int:
             "trained_at": result.trained_at,
             "machine_id": machine_id,
         }
-        with open(metrics_path, "w") as f:
-            json.dump(metrics_data, f, indent=2)
-        print(f"📊 Métricas salvas em: {metrics_path}")
-        
+
+        # Payload versionado: pesa + normalizador + métricas (JSON-serializável).
+        weights_payload = {
+            "state_dict": state_dict_to_jsonable(trainer.model.state_dict()),
+            "scaler_mean": trainer.scaler.mean_.tolist(),
+            "scaler_scale": trainer.scaler.scale_.tolist(),
+            "machine_id": machine_id,
+            "trained_at": result.trained_at,
+            "metrics": metrics,
+        }
+
+        # 1) Os pesos são SEMPRE persistidos no Supabase (nunca se perde um treino).
+        model_name = repo.ml_model_name(machine_id)
+        model_version = result.trained_at
+        previous_best = repo.get_best_model_weights(model_name)
+        previous_accuracy = (previous_best or {}).get("accuracy")
+
+        # Referência de comparação: melhor acurácia conhecida (Supabase + métrica local).
+        local_metrics_path = output_dir / f"metrics_{machine_id[:8]}.json"
+        local_accuracy = None
+        try:
+            if local_metrics_path.is_file():
+                local_data = json.loads(local_metrics_path.read_text(encoding="utf-8"))
+                local_accuracy = local_data.get("accuracy")
+        except (OSError, json.JSONDecodeError):
+            local_accuracy = None
+        candidates = [value for value in (previous_accuracy, local_accuracy) if isinstance(value, (int, float))]
+        best_known_accuracy = max(candidates) if candidates else None
+
+        saved_row = repo.save_model_weights(model_name, model_version, weights_payload, result.accuracy)
+        if saved_row is None:
+            raise RuntimeError("Não foi possível salvar os pesos do modelo no Supabase.")
+        print(f"\n[OK] Pesos salvos no Supabase: {model_name} v{model_version[:19]} (accuracy={result.accuracy:.2%})")
+
+        # 2) O histórico registra toda execução, mesmo as inferiores.
+        training_samples = int(sum(
+            1 for _ in repo.list_machine_feedback(machine_id=machine_id, limit=2000)
+        ))
+        repo.save_training_history(
+            model_name=model_name,
+            model_version=model_version,
+            training_samples=training_samples,
+            accuracy=result.accuracy,
+            training_duration_seconds=round(duration, 2),
+            metadata={"metrics": metrics, "previous_best_accuracy": best_known_accuracy},
+        )
+
+        # 3) Mantém em uso o melhor modelo: só substitui o arquivo local se superar o melhor conhecido.
+        import torch
+        is_better = best_known_accuracy is None or result.accuracy > best_known_accuracy
+        if is_better:
+            torch.save(
+                {
+                    "state_dict": trainer.model.state_dict(),
+                    "scaler_mean": trainer.scaler.mean_.tolist(),
+                    "scaler_scale": trainer.scaler.scale_.tolist(),
+                    "machine_id": machine_id,
+                    "trained_at": result.trained_at,
+                },
+                model_path,
+            )
+            with open(local_metrics_path, "w", encoding="utf-8") as f:
+                json.dump(metrics, f, indent=2)
+            if best_known_accuracy is None:
+                print(f"[OK] Primeiro modelo ativo salvo em: {model_path}")
+            else:
+                print(f"[OK] Modelo ativo atualizado em {model_path} (superou o melhor anterior: {best_known_accuracy:.2%})")
+        else:
+            print(
+                f"[MANTER] Resultado inferior ao melhor modelo em uso "
+                f"(novo {result.accuracy:.2%} <= melhor {best_known_accuracy:.2%}). "
+                f"Pesos preservados no Supabase; arquivo local {model_path} não foi alterado."
+            )
+
         diary.log(
             "ML_TRAIN_OK",
             f"Treino concluído para {machine.tag}",
-            {"machine_id": machine_id, "accuracy": result.accuracy},
+            {
+                "machine_id": machine_id,
+                "accuracy": result.accuracy,
+                "val_accuracy": result.val_accuracy,
+                "f1_score": result.f1_score,
+                "model_version": model_version,
+                "modelo_ativo_atualizado": is_better,
+            },
         )
         return 0
     except Exception as exc:
@@ -349,7 +417,7 @@ def cmd_ml_train(args: argparse.Namespace) -> int:
             f"Falha no treino para {machine.tag}",
             {"machine_id": machine_id, "error": str(exc)},
         )
-        print(f"\n❌ Erro no treino: {exc}")
+        print(f"\n[ERRO] Erro no treino: {exc}")
         return 1
 
 

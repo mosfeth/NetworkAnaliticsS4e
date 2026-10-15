@@ -44,7 +44,7 @@ def main() -> int:
             limit=args.limit,
         )
 
-        print(f"\n✅ Treino concluído!")
+        print(f"\n[OK] Treino concluído!")
         print(f"  Épocas treinadas: {result.epochs_trained}")
         print(f"  Acurácia teste: {result.accuracy:.2%}")
         print(f"  F1-score: {result.f1_score:.2%}")
@@ -57,7 +57,7 @@ def main() -> int:
 
         model_path = output_dir / f"model_{args.machine_id[:8]}.pth"
         torch.save(trainer.model.state_dict(), model_path)
-        print(f"\n💾 Modelo salvo em: {model_path}")
+        print(f"\n[OK] Modelo salvo em: {model_path}")
 
         # Salva métricas
         metrics_path = output_dir / f"metrics_{args.machine_id[:8]}.json"
@@ -73,12 +73,12 @@ def main() -> int:
         }
         with open(metrics_path, "w") as f:
             json.dump(metrics_data, f, indent=2)
-        print(f"📊 Métricas salvas em: {metrics_path}")
+        print(f"[OK] Métricas salvas em: {metrics_path}")
 
         return 0
 
     except Exception as e:
-        print(f"\n❌ Erro no treino: {e}")
+        print(f"\n[ERRO] Erro no treino: {e}")
         return 1
 
 

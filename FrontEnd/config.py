@@ -31,7 +31,7 @@ class FrontendSettings:
         or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
     )
 
-    PAGE_TITLE: str = "SupaDiag | Observabilidade de Rede"
+    PAGE_TITLE: str = "Network analysis"
     PAGE_ICON: str = "📡"
     LAYOUT: str = "wide"
     DATA_DIR: Path = DATA_DIR

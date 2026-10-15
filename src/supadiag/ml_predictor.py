@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import torch
 
-from .ml_model import NetworkQualityLSTM
+from .ml_model import NetworkQualityLSTM, jsonable_to_state_dict
 from .config import Settings
 from .supabase_repository import SupabaseRepository
 
@@ -57,8 +57,15 @@ class NetworkQualityPredictor:
         artifact = torch.load(path, map_location=self.device, weights_only=True)
         if not isinstance(artifact, dict) or "state_dict" not in artifact:
             raise ValueError("Artefato de IA antigo/incompleto; treine o modelo novamente.")
+        self._apply_artifact(artifact)
+
+    def _apply_artifact(self, artifact: dict) -> None:
+        """Aplica um artefato de modelo (local em tensores ou do Supabase em listas)."""
+        state_dict = artifact["state_dict"]
+        if state_dict and isinstance(next(iter(state_dict.values())), list):
+            state_dict = jsonable_to_state_dict(state_dict)
         try:
-            self.model.load_state_dict(artifact["state_dict"])
+            self.model.load_state_dict(state_dict)
         except RuntimeError as exc:
             raise ValueError("Modelo antigo: registre avaliações para treinar a versão combinada.") from exc
         self.scaler_mean = np.asarray(artifact["scaler_mean"], dtype=np.float32)
@@ -66,18 +73,45 @@ class NetworkQualityPredictor:
         self.loaded_machine_id = artifact.get("machine_id")
         self.model.eval()
 
-    def predict_next_4h(
-        self, machine_id: str, measurements: list[dict] | None = None
+    def restore_from_supabase(self, machine_id: str, model_path: Path) -> bool:
+        """Restaura o melhor modelo salvo no Supabase quando o arquivo local não existe."""
+        model_name = self.repository.ml_model_name(machine_id)
+        best = self.repository.get_best_model_weights_payload(model_name)
+        if not best:
+            return False
+        payload, _row = best
+        if not isinstance(payload, dict) or "state_dict" not in payload:
+            return False
+        try:
+            artifact = {
+                "state_dict": jsonable_to_state_dict(payload["state_dict"]),
+                "scaler_mean": payload.get("scaler_mean", []),
+                "scaler_scale": payload.get("scaler_scale", []),
+                "machine_id": payload.get("machine_id", machine_id),
+                "trained_at": payload.get("trained_at"),
+            }
+            model_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(artifact, model_path)
+            return True
+        except Exception:
+            return False
+
+    def predict_next_hour(
+        self,
+        machine_id: str,
+        measurements: list[dict] | None = None,
+        horizon_hours: int = 1,
     ) -> PredictionResult:
         """
-        Prediz qualidade para as próximas 4 horas.
-        
+        Prediz a qualidade de rede para a próxima hora (padrão: horizonte de 1h).
+
         Args:
             machine_id: ID da máquina
             measurements: Lista de medições (opcional, busca do banco se None)
-            
+            horizon_hours: Quantas horas à frente projetar (padrão 1)
+
         Returns:
-            PredictionResult com previsão
+            PredictionResult com a previsão de cada hora do horizonte
         """
         if measurements is None:
             measurements = self.repository.get_measurements(machine_id, hours=24, limit=500)
@@ -98,6 +132,9 @@ class NetworkQualityPredictor:
         model_path = self.model_path or (
             self.settings.project_root / "models" / f"model_{machine_id[:8]}.pth"
         )
+        if not model_path.is_file():
+            # Sem arquivo local: restaura o melhor modelo persistido no Supabase.
+            self.restore_from_supabase(machine_id, model_path)
         if not model_path.is_file():
             raise FileNotFoundError(
                 f"Modelo ainda não treinado para esta máquina. Treine pelo botão do dashboard. ({model_path})"
@@ -127,7 +164,7 @@ class NetworkQualityPredictor:
         current_sequence = sequence.copy()
         now = datetime.now(timezone.utc)
 
-        for h in range(1, 5):
+        for h in range(1, max(1, horizon_hours) + 1):
             # Prediz próxima hora
             input_tensor = torch.FloatTensor(current_sequence).unsqueeze(0).to(self.device)
             with torch.no_grad():

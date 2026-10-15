@@ -173,6 +173,27 @@ def _cached_accuracy_data(machine_id: str):
         return []
 
 
+@st.cache_data(ttl=60)
+def _cached_model_metrics(machine_id: str):
+    """Métricas reais do melhor modelo LSTM treinado, persistido no Supabase."""
+    try:
+        from supabase import create_client
+        from config import settings as fe_settings
+        sb = create_client(fe_settings.SUPABASE_URL, fe_settings.SUPABASE_KEY)
+        rows = (
+            sb.table("ml_model_weights")
+            .select("model_version, accuracy, trained_at")
+            .eq("model_name", f"network_quality_{machine_id}")
+            .limit(10)
+            .execute().data or []
+        )
+        rows = [r for r in rows if r.get("accuracy") is not None]
+        rows.sort(key=lambda r: r["accuracy"], reverse=True)
+        return rows[0] if rows else None
+    except Exception:
+        return None
+
+
 @st.cache_data(ttl=30)
 def _cached_machine_feedback(limit: int):
     repo = get_repository()
@@ -393,7 +414,7 @@ def get_sidebar_events(repo: FrontendRepository, limit: int = 30) -> list[dict]:
 
 def render_cards_view(repo: FrontendRepository, client_id: Optional[str]) -> None:
     """Renderiza cards compactos, um por equipamento monitorado."""
-    st.html('<h1 class="main-header">SupaDiag | Observabilidade de Rede</h1>')
+    st.html('<h1 class="main-header">Network analysis</h1>')
     
     # Tenta buscar clientes com máquinas agrupadas
     try:
@@ -658,9 +679,9 @@ def _render_advanced_client_detail(repo: FrontendRepository, client_id: str) -> 
                             icon = "🔴" if severity == "critical" else "🟡" if severity == "warning" else "🟠"
                             st.markdown(f"{icon} {machine.tag} - {event.get('metric', '')}: {event.get('metric_value', 0)}")
         
-# ===== PREVISÃO 4H (LSTM) =====
+# ===== PREVISÃO 1H (LSTM) =====
         st.divider()
-        st.subheader("Previsão de Qualidade (4h)")
+        st.subheader("Previsão de Qualidade (1h)")
         
         target_for_prediction = internet_machine if internet_machine else (local_machines[0] if local_machines else None)
         
@@ -668,6 +689,16 @@ def _render_advanced_client_detail(repo: FrontendRepository, client_id: str) -> 
             # Botão Train Model
             col_train, col_pred = st.columns([1, 3])
             with col_train:
+                best_model = _cached_model_metrics(target_for_prediction.id)
+                if best_model:
+                    trained_label = str(best_model.get("trained_at", ""))[:16].replace("T", " ")
+                    st.metric(
+                        "Acurácia do modelo",
+                        f"{best_model['accuracy'] * 100:.1f}%",
+                        help=f"Melhor treino salvo no Supabase (versão de {trained_label})",
+                    )
+                else:
+                    st.caption("Nenhum modelo treinado salvo ainda.")
                 if st.button("🚀 Treinar Modelo", key=f"train_{target_for_prediction.id}", use_container_width=True):
                     try:
                         venv_python = sys.executable
@@ -738,7 +769,7 @@ def _render_advanced_client_detail(repo: FrontendRepository, client_id: str) -> 
                         )
                         raise ValueError("São necessárias pelo menos 12 medições alcançáveis.")
                     else:
-                        prediction = predictor.predict_next_4h(target_for_prediction.id, measurements)
+                        prediction = predictor.predict_next_hour(target_for_prediction.id, measurements)
                     
                     # Prepara dados para gráfico
                     historical_timestamps = []
@@ -766,41 +797,41 @@ def _render_advanced_client_detail(repo: FrontendRepository, client_id: str) -> 
                             historical_colors.append("#dc3545")
                     
                     last_ts = historical_timestamps[-1]
-                    forecast_timestamps = [last_ts + timedelta(hours=h) for h in range(1, 5)]
+                    forecast_timestamps = [last_ts + timedelta(hours=h) for h in range(1, 2)]
                     forecast_quality = prediction.forecast_classes
                     forecast_colors = ["#28a745" if c == 0 else "#ffc107" if c == 1 else "#dc3545" for c in forecast_quality]
                     
                     fig = go.Figure()
-                    
-                    # Linha de histórico com pontos coloridos por qualidade
+
+                    # Real (medido): círculos coloridos pela qualidade efetivamente medida
                     for i, (ts, q, color) in enumerate(zip(historical_timestamps, historical_quality, historical_colors)):
                         fig.add_trace(go.Scatter(
                             x=[ts],
                             y=[q],
                             mode='markers',
-                            name='Histórico' if i == 0 else '',
+                            name='Real (medido)' if i == 0 else '',
                             marker=dict(size=8, color=color, line=dict(width=1, color='white')),
                             showlegend=(i == 0),
-                            hovertemplate=f"<b>Histórico</b><br>Horário: %{{x|%H:%M}}<br>Qualidade: %{{y}}<extra></extra>"
+                            hovertemplate=f"<b>Real (medido)</b><br>Horário: %{{x|%H:%M}}<br>Qualidade: %{{y}}<extra></extra>"
                         ))
-                    
-                    # Linha conectando histórico
+
+                    # Tendência dos valores reais
                     fig.add_trace(go.Scatter(
                         x=historical_timestamps,
                         y=historical_quality,
                         mode='lines',
-                        name='Tendência',
+                        name='Tendência real',
                         line=dict(color='#1f77b4', width=2, dash='dot'),
                         hoverinfo='skip'
                     ))
-                    
-                    # Previsão 4h
+
+                    # Previsão (1h): losangos, destacados como NÃO medidos
                     for i, (ts, q, color, conf) in enumerate(zip(forecast_timestamps, forecast_quality, forecast_colors, prediction.forecast_confidences)):
                         fig.add_trace(go.Scatter(
                             x=[ts],
                             y=[q],
                             mode='markers',
-                            name='Previsão' if i == 0 else '',
+                            name='Previsão (não medido)' if i == 0 else '',
                             marker=dict(
                                 size=16,
                                 color=color,
@@ -808,21 +839,45 @@ def _render_advanced_client_detail(repo: FrontendRepository, client_id: str) -> 
                                 line=dict(width=2, color='white')
                             ),
                             showlegend=(i == 0),
-                            hovertemplate=f"<b>Previsão {i+1}h</b><br>Horário: %{{x|%H:%M}}<br>Qualidade: %{{y}}<br>Confiança: {conf:.1%}<extra></extra>"
+                            hovertemplate=f"<b>Previsão (não medido)</b><br>Horário: %{{x|%H:%M}}<br>Qualidade: %{{y}}<br>Confiança: {conf:.1%}<extra></extra>"
                         ))
-                    
-                    # Linha de confiança
+
+                    # Linha de confiança da previsão
                     fig.add_trace(go.Scatter(
                         x=forecast_timestamps,
                         y=forecast_quality,
                         mode='lines',
-                        name='Tendência previsão',
+                        name='Tendência prevista',
                         line=dict(color='#ff7f0e', width=2, dash='dash'),
                         hoverinfo='skip'
                     ))
-                    
+
+                    # Divisória entre o que é real e o que é previsão
+                    fig.add_vline(
+                        x=last_ts,
+                        line_width=1.5,
+                        line_dash="dash",
+                        line_color="#999999",
+                    )
+                    fig.add_annotation(
+                        x=last_ts,
+                        y=4.15,
+                        text="A partir daqui: PREVISÃO",
+                        showarrow=False,
+                        font=dict(size=10, color="#666666"),
+                        xanchor="left",
+                    )
+                    fig.add_annotation(
+                        x=last_ts,
+                        y=4.15,
+                        text="REAL (medido) ",
+                        showarrow=False,
+                        font=dict(size=10, color="#666666"),
+                        xanchor="right",
+                    )
+
                     fig.update_layout(
-                        title=f"Previsão de Qualidade - {target_for_prediction.tag}",
+                        title=f"Previsão de Qualidade (1h) - {target_for_prediction.tag}",
                         xaxis_title="Horário (São Paulo)",
                         yaxis_title="Qualidade",
                         yaxis=dict(
@@ -858,8 +913,14 @@ def _render_advanced_client_detail(repo: FrontendRepository, client_id: str) -> 
                         ]
                     )
                     st.plotly_chart(fig, use_container_width=True, key="forecast_chart")
-                    
-                    st.caption(f"Previsão gerada em {prediction.predicted_at[:19].replace('T', ' ')} | Confiança: {prediction.confidence:.1%}")
+                    st.caption(
+                        f"Previsão gerada em {prediction.predicted_at[:19].replace('T', ' ')} | "
+                        f"Confiança: {prediction.confidence:.1%}"
+                    )
+                    st.caption(
+                        "Círculos à esquerda da linha tracejada = valores REAIS medidos pelo coletor. "
+                        "Losangos à direita = PREVISÃO do modelo para a próxima hora (não medidos)."
+                    )
                 except (FileNotFoundError, ValueError) as e:
                     st.info(str(e))
                 except Exception as e:
@@ -1581,7 +1642,7 @@ def main() -> None:
     init_session_state()
     config_error = settings.validation_error()
     if config_error:
-        st.title("SupaDiag | Observabilidade de Rede")
+        st.title("Network analysis")
         st.error(config_error)
         st.code("SUPABASE_URL=https://SEU_PROJETO.supabase.co\nSUPABASE_SECRET_KEY=sb_secret_...", language="text")
         st.caption("Copie .env.example para .env, preencha as credenciais do Supabase e atualize esta página.")
