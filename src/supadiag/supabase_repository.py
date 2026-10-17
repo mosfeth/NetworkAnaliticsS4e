@@ -153,6 +153,7 @@ class SupabaseRepository:
         ip: str | None = None,
         frequency_seconds: int | None = None,
         active: bool | None = None,
+        client_id: str | None = None,
     ) -> Machine:
         payload = {}
         if tag is not None:
@@ -163,6 +164,8 @@ class SupabaseRepository:
             payload["frequency_seconds"] = frequency_seconds
         if active is not None:
             payload["active"] = active
+        if client_id is not None:
+            payload["client_id"] = client_id
         if not payload:
             return self.get_machine(machine_id)  # type: ignore
         data = self._execute(
@@ -258,6 +261,27 @@ class SupabaseRepository:
             "measured_at": measured_at or datetime.now(timezone.utc).isoformat(),
         }
         self._execute(self.client.table("device_status_events").insert(payload))
+
+    def list_device_status_events(
+        self,
+        machine_id: str | None = None,
+        client_id: str | None = None,
+        event_type: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        query = (
+            self.client.table("device_status_events")
+            .select("*, machines(tag, ip), clients(name)")
+            .order("measured_at", desc=True)
+        )
+        if machine_id:
+            query = query.eq("machine_id", machine_id)
+        if client_id:
+            query = query.eq("client_id", client_id)
+        if event_type:
+            query = query.eq("event_type", event_type)
+        query = query.limit(limit)
+        return self._execute(query) or []
 
     def cleanup_old_measurements(self, cutoff_iso: str) -> int:
         data = self._execute(
