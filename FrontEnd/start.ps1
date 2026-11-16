@@ -68,19 +68,25 @@ if ($dependenciesMissing) {
 function Stop-ListenerOnPort {
     param([Parameter(Mandatory = $true)][int]$Port)
 
+    Write-Host "Verificando porta $Port..." -ForegroundColor Cyan
+    
+    # Método 1: netstat (compatível com Windows 10/11)
     $netstatLines = @(& netstat.exe -ano -p tcp 2>$null)
     $ownerIds = @($netstatLines | ForEach-Object {
-        if ($_ -match ('^\s*TCP\s+\S+:' + $Port + '\s+\S+\s+LISTENING\s+(\d+)\s*$')) {
+        if ($_ -match ('^\s*TCP\s+\S+:' + $Port + '\s+\S+\s+(?:LISTENING|ESTABLISHED|TIME_WAIT|CLOSE_WAIT)\s+(\d+)\s*$')) {
             [int]$Matches[1]
         }
     } | Sort-Object -Unique)
 
-    foreach ($ownerId in $ownerIds) {
-        if (-not $ownerId -or $ownerId -eq $PID) { continue }
-        $process = Get-Process -Id $ownerId -ErrorAction SilentlyContinue
-        if (-not $process) { continue }
-        Write-Host "Liberando porta $Port (PID $ownerId, $($process.ProcessName))..." -ForegroundColor Yellow
-        Stop-Process -Id $ownerId -Force -ErrorAction Stop
+    # Método 2: Get-NetTCPConnection (mais confiável no PowerShell 5.1+)
+    try {
+        $connections = Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue
+        if ($connections) {
+            $netIds = $connections | ForEach-Object { $_.OwningProcess } | Sort-Object -Unique
+            $ownerIds = ($ownerIds + $netIds) | Sort-Object -Unique
+        }
+    } catch {
+        # Ignora se Get-NetTCPConnection não estiver disponível
     }
 
     if ($ownerIds.Count -eq 0) {
@@ -88,18 +94,75 @@ function Stop-ListenerOnPort {
         return
     }
 
-    $deadline = (Get-Date).AddSeconds(5)
+    $count = $ownerIds.Count
+    $idsStr = $ownerIds -join ', '
+    Write-Host ("Encontrados {0} processo(s) na porta {1}: {2}" -f $count, $Port, $idsStr) -ForegroundColor Yellow
+
+    foreach ($ownerId in $ownerIds) {
+        if (-not $ownerId -or $ownerId -eq $PID) { continue }
+        $process = Get-Process -Id $ownerId -ErrorAction SilentlyContinue
+        if (-not $process) { continue }
+        
+        $procName = $process.ProcessName
+        Write-Host ("Encerrando processo PID {0} ({1})..." -f $ownerId, $procName) -ForegroundColor Yellow
+        try {
+            Stop-Process -Id $ownerId -Force -ErrorAction Stop
+        } catch {
+            $errMsg = $_.ToString()
+            Write-Host ("Falha ao encerrar PID {0}: {1}" -f $ownerId, $errMsg) -ForegroundColor Red
+        }
+    }
+
+    # Aguarda liberação com timeout maior
+    $deadline = (Get-Date).AddSeconds(15)
+    $attempt = 0
     do {
-        Start-Sleep -Milliseconds 250
-        $remaining = @(& netstat.exe -ano -p tcp 2>$null | Where-Object {
-            $_ -match ('^\s*TCP\s+\S+:' + $Port + '\s+\S+\s+LISTENING\s+\d+\s*$')
+        $attempt++
+        Start-Sleep -Milliseconds 500
+        
+        # Re-verifica com netstat
+        $netstatLines = @(& netstat.exe -ano -p tcp 2>$null)
+        $remaining = @($netstatLines | Where-Object {
+            $_ -match ('^\s*TCP\s+\S+:' + $Port + '\s+\S+\s+(?:LISTENING|ESTABLISHED|TIME_WAIT|CLOSE_WAIT)\s+\d+\s*$')
         })
+        
+        # Também verifica com Get-NetTCPConnection
+        try {
+            $conns = Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue
+            if ($conns) { $remaining += @("dummy") }
+        } catch { }
+        
+        if ($remaining.Count -gt 0) {
+            Write-Host ("Aguardando liberação da porta {0}... (tentativa {1})" -f $Port, $attempt) -ForegroundColor Cyan
+        }
     } while ($remaining.Count -gt 0 -and (Get-Date) -lt $deadline)
 
     if ($remaining.Count -gt 0) {
-        throw "Não foi possível liberar a porta $Port. Feche o aplicativo que a está usando e tente novamente."
+        # Última tentativa: kill tree
+        foreach ($ownerId in $ownerIds) {
+            if (-not $ownerId -or $ownerId -eq $PID) { continue }
+            try {
+                $proc = Get-Process -Id $ownerId -ErrorAction SilentlyContinue
+                if ($proc) {
+                    Write-Host ("Forçando encerramento final do PID {0}..." -f $ownerId) -ForegroundColor Red
+                    Stop-Process -Id $ownerId -Force -ErrorAction SilentlyContinue
+                }
+            } catch { }
+        }
+        Start-Sleep -Seconds 2
+        
+        # Verifica final
+        $netstatLines = @(& netstat.exe -ano -p tcp 2>$null)
+        $finalCheck = @($netstatLines | Where-Object {
+            $_ -match ('^\s*TCP\s+\S+:' + $Port + '\s+\S+\s+(?:LISTENING|ESTABLISHED|TIME_WAIT|CLOSE_WAIT)\s+\d+\s*$')
+        })
+        
+        if ($finalCheck.Count -gt 0) {
+            throw ("Não foi possível liberar a porta {0} após múltiplas tentativas. Verifique manualmente." -f $Port)
+        }
     }
-    Write-Host "Porta $Port liberada." -ForegroundColor Green
+    
+    Write-Host "Porta $Port liberada com sucesso." -ForegroundColor Green
 }
 
 Stop-ListenerOnPort -Port 8502

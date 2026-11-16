@@ -1,4 +1,4 @@
-﻿# FrontEnd/app.py
+# FrontEnd/app.py
 # Dashboard Principal - AI Network Analyzer
 
 import streamlit as st
@@ -12,6 +12,11 @@ import subprocess
 import os
 import sys
 from pathlib import Path
+
+PROJECT_ROOT = str(Path(__file__).resolve().parents[1])
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
@@ -26,6 +31,9 @@ from components import (
     render_alert_tab,
     render_device_status_events,
 )
+
+# Versão do Dashboard
+DASHBOARD_VERSION = "1.0.8"
 
 # Configuração da página
 st.set_page_config(
@@ -633,7 +641,7 @@ def _render_advanced_client_detail(repo: FrontendRepository, client_id: str) -> 
             first_machine = local_machines[0]
             measurements = _cached_measurements(first_machine.id, hours=24, limit=settings.MAX_MEASUREMENTS)
             if measurements:
-                render_metrics_charts(measurements, first_machine.tag, f"client_{first_machine.id}")
+                render_metrics_charts(measurements, first_machine.tag, f"client_{first_machine.id}", machine_id=first_machine.id)
             else:
                 st.info(f"Sem medições para {first_machine.tag}")
         
@@ -642,7 +650,7 @@ def _render_advanced_client_detail(repo: FrontendRepository, client_id: str) -> 
             st.subheader("Internet Check - Histórico")
             measurements = _cached_measurements(internet_machine.id, hours=24, limit=settings.MAX_MEASUREMENTS)
             if measurements:
-                render_metrics_charts(measurements, internet_machine.tag, f"client_internet_{internet_machine.id}")
+                render_metrics_charts(measurements, internet_machine.tag, f"client_internet_{internet_machine.id}", machine_id=internet_machine.id)
             else:
                 st.info("Sem medições para internet check")
         
@@ -732,9 +740,10 @@ def _render_advanced_client_detail(repo: FrontendRepository, client_id: str) -> 
                     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
                     from src.supadiag.ml_predictor import NetworkQualityPredictor
                     from src.supadiag.config import load_settings
+                    from src.supadiag.supabase_repository import SupabaseRepository
                     
                     backend_settings = load_settings()
-                    repo_nq = get_repository()
+                    repo_nq = SupabaseRepository(backend_settings)
                     predictor = NetworkQualityPredictor(backend_settings, repo_nq)
                     
                     measurements = _cached_measurements(target_for_prediction.id, hours=12, limit=100)
@@ -798,8 +807,9 @@ def _render_advanced_client_detail(repo: FrontendRepository, client_id: str) -> 
                     
                     last_ts = historical_timestamps[-1]
                     forecast_timestamps = [last_ts + timedelta(hours=h) for h in range(1, 2)]
-                    forecast_quality = prediction.forecast_classes
-                    forecast_colors = ["#28a745" if c == 0 else "#ffc107" if c == 1 else "#dc3545" for c in forecast_quality]
+                    class_to_y = {0: 3, 1: 2, 2: 1}
+                    forecast_quality = [class_to_y.get(c, 2) for c in prediction.forecast_classes]
+                    forecast_colors = ["#28a745" if c == 0 else "#ffc107" if c == 1 else "#dc3545" for c in prediction.forecast_classes]
                     
                     fig = go.Figure()
 
@@ -972,11 +982,20 @@ def _quality_frame(measurements: list[dict], events: list[dict], source: str) ->
     return frame.reset_index(drop=True)
 
 
-def _quality_chart(local: pd.DataFrame, internet: pd.DataFrame, title: str) -> None:
+def _quality_chart(local: pd.DataFrame, internet: pd.DataFrame, title: str, machine_id: str | None = None, is_local: bool = True) -> None:
+    """Gráfico de qualidade com previsão IA opcional.
+    
+    Args:
+        local: DataFrame com métricas locais
+        internet: DataFrame com métricas de internet
+        title: Título do gráfico
+        machine_id: ID da máquina para buscar previsão IA
+        is_local: True se gráfico é da rede local, False se é internet
+    """
     metrics = [
-        ("latency_ms", "Latência", "ms", 80, 150),
-        ("jitter_ms", "Jitter", "ms", 30, 50),
-        ("packet_loss_percent", "Perda de pacotes", "%", 2, 5),
+        ("latency_ms", "Latência", "ms", 100.0, 150.0),
+        ("jitter_ms", "Jitter", "ms", 20.0, 30.0),
+        ("packet_loss_percent", "Perda de pacotes", "%", 0.5, 1.0),
     ]
     colors = {"Local": "#60a5fa", "Internet": "#22d3ee"}
     frames = {"Local": local, "Internet": internet}
@@ -988,6 +1007,83 @@ def _quality_chart(local: pd.DataFrame, internet: pd.DataFrame, title: str) -> N
         subplot_titles=tuple(item[1] for item in metrics),
         row_heights=[0.4, 0.3, 0.3],
     )
+    
+    # Busca previsão IA e faixas aprendidas se machine_id fornecido
+    prediction_result = None
+    prediction_series: list[dict] = []
+    model_accuracy = None
+    prediction_error = None
+    learned_quality: dict | None = None
+    if machine_id:
+        try:
+            # Adiciona raiz do projeto ao path para importar src.supadiag
+            import sys
+            import os
+            sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            
+            from src.supadiag.ml_predictor import NetworkQualityPredictor
+            from src.supadiag.config import load_settings
+            from src.supadiag.network_quality import learn_quality_thresholds
+            from src.supadiag.supabase_repository import SupabaseRepository
+            
+            settings = load_settings()
+            supabase_repo = SupabaseRepository(settings)
+            feedbacks = supabase_repo.list_machine_feedback(machine_id=machine_id, limit=2000)
+            learned_quality = learn_quality_thresholds(feedbacks)
+            th = learned_quality["thresholds"]
+            metrics = [
+                ("latency_ms", "Latência", "ms", th["latency_ms"]["warn"], th["latency_ms"]["crit"]),
+                ("jitter_ms", "Jitter", "ms", th["jitter_ms"]["warn"], th["jitter_ms"]["crit"]),
+                ("packet_loss_percent", "Perda de pacotes", "%", th["packet_loss_percent"]["warn"], th["packet_loss_percent"]["crit"]),
+            ]
+
+            predictor = NetworkQualityPredictor(settings, supabase_repo)
+            
+            model_path = settings.project_root / "models" / f"model_{machine_id[:8]}.pth"
+            if not model_path.is_file():
+                predictor.restore_from_supabase(machine_id, model_path)
+            if model_path.is_file():
+                predictor.load_model(str(model_path))
+                
+                def _frame_to_dicts(df: pd.DataFrame) -> list[dict]:
+                    if df.empty:
+                        return []
+                    def _clean_num(val):
+                        return None if pd.isna(val) else float(val)
+                    return [
+                        {
+                            "measured_at": row["timestamp"].isoformat(),
+                            "latency_ms": _clean_num(row.get("latency_ms")),
+                            "jitter_ms": _clean_num(row.get("jitter_ms")),
+                            "packet_loss_percent": _clean_num(row.get("packet_loss_percent")) or 0.0,
+                            "status": row.get("status", ""),
+                        }
+                        for _, row in df.iterrows()
+                    ]
+
+                # Prepara medições para predição (usa o frame apropriado)
+                pred_frame = local if is_local else internet
+                if not pred_frame.empty and len(pred_frame) >= 12:
+                    pred_measurements = _frame_to_dicts(pred_frame)
+                    internet_dicts = _frame_to_dicts(internet) if not internet.empty else None
+                    prediction_result = predictor.predict_next_hour(machine_id, pred_measurements, horizon_hours=1)
+                    prediction_series = predictor.predict_series(
+                        machine_id,
+                        pred_measurements,
+                        internet_measurements=internet_dicts,
+                        max_points=120,
+                        horizon_seconds=30,
+                    )
+                else:
+                    prediction_error = f"Dados insuficientes: {len(pred_frame) if not pred_frame.empty else 0}/12 medições"
+                
+                # Busca acurácia do modelo
+                best_model = supabase_repo.get_best_model_weights(f"network_quality_{machine_id}")
+                if best_model and best_model.get("accuracy") is not None:
+                    model_accuracy = best_model["accuracy"]
+        except Exception as exc:
+            prediction_error = str(exc)
+    
     for row, (field, label, unit, warn, critical) in enumerate(metrics, start=1):
         for name, frame in frames.items():
             if frame.empty or frame[field].dropna().empty:
@@ -1006,22 +1102,43 @@ def _quality_chart(local: pd.DataFrame, internet: pd.DataFrame, title: str) -> N
                     hovertemplate=f"%{{x|%d/%m %H:%M:%S}}<br>{name}: %{{y:.2f}} {unit}<extra></extra>",
                 ), row=row, col=1,
             )
-            if len(values) >= 5:
-                smooth = values[field].rolling(5, min_periods=2).median()
-                fig.add_trace(
-                    go.Scatter(
-                        x=values["timestamp"], y=smooth, mode="lines",
-                        name=f"Tendência {name.lower()} · {label.lower()}",
-                        legendgroup=name, showlegend=False,
-                        line={"color": color, "width": 3},
-                        hovertemplate=f"Tendência: %{{y:.2f}} {unit}<extra></extra>",
-                    ), row=row, col=1,
-                )
+        # Previsão IA em branco (+30s à frente) usando o valor esperado ponderado pelas probabilidades da LSTM
+        if prediction_series and learned_quality:
+            c_bom, c_med, c_ruim = learned_quality["metric_centroids"][field]
+            series_x = [
+                pd.Timestamp(item["forecast_at"]).tz_convert("America/Sao_Paulo")
+                for item in prediction_series
+            ]
+            series_y = [
+                (item["probs"][0] * c_bom) + (item["probs"][1] * c_med) + (item["probs"][2] * c_ruim)
+                for item in prediction_series
+            ]
+            series_text = [
+                f"Previsão IA (+30s): {item['predicted_label']} ({item['confidence']*100:.0f}%)"
+                for item in prediction_series
+            ]
+            fig.add_trace(
+                go.Scatter(
+                    x=series_x,
+                    y=series_y,
+                    mode="lines+markers",
+                    name="Previsão IA (+30s)",
+                    line=dict(color="#ffffff", width=2.5),
+                    marker=dict(color="#ffffff", size=4),
+                    text=series_text,
+                    hovertemplate=f"%{{x|%d/%m %H:%M:%S}}<br>%{{text}} · %{{y:.2f}} {unit}<extra></extra>",
+                    showlegend=(row == 1),
+                    legendgroup="IA_30s",
+                ),
+                row=row, col=1,
+            )
+        
         fig.add_hline(y=warn, line_dash="dash", line_color="#d97706", opacity=0.7,
                       annotation_text=f"Atenção {warn} {unit}", annotation_position="top left", row=row, col=1)
         fig.add_hline(y=critical, line_dash="dot", line_color="#dc2626", opacity=0.7,
                       annotation_text=f"Crítico {critical} {unit}", annotation_position="bottom left", row=row, col=1)
         fig.update_yaxes(title_text=unit, rangemode="tozero", row=row, col=1)
+    
     if all(frame.empty or frame["latency_ms"].dropna().empty for frame in frames.values()) and all(
         frame.empty or frame["jitter_ms"].dropna().empty for frame in frames.values()
     ):
@@ -1031,11 +1148,18 @@ def _quality_chart(local: pd.DataFrame, internet: pd.DataFrame, title: str) -> N
             font={"color": "#cbd5e1", "size": 14},
             bgcolor="rgba(15, 23, 42, 0.82)", borderpad=6,
         )
+    
     loss_max = max(
         (float(frame["packet_loss_percent"].max()) for frame in frames.values()
          if not frame.empty and frame["packet_loss_percent"].notna().any()),
         default=0.0,
     )
+    
+    # Adiciona acurácia do modelo no título
+    title_suffix = ""
+    if model_accuracy is not None:
+        title_suffix = f"  |  Acurácia Modelo: {model_accuracy*100:.1f}%"
+    
     fig.update_xaxes(
         title_text="Horário local · São Paulo", showgrid=True, gridcolor="#334155",
         tickfont={"color": "#cbd5e1"}, title_font={"color": "#cbd5e1"},
@@ -1044,7 +1168,7 @@ def _quality_chart(local: pd.DataFrame, internet: pd.DataFrame, title: str) -> N
     fig.update_yaxes(gridcolor="#334155", tickfont={"color": "#cbd5e1"})
     fig.update_yaxes(range=[0, max(10, min(110, loss_max * 1.1))], row=3, col=1)
     fig.update_layout(
-        title={"text": title, "x": 0.02, "xanchor": "left"},
+        title={"text": title + title_suffix, "x": 0.02, "xanchor": "left"},
         height=690, template="plotly_dark", hovermode="x unified",
         margin={"l": 20, "r": 25, "t": 75, "b": 30},
         legend={"orientation": "h", "y": 1.03, "x": 1, "xanchor": "right"},
@@ -1052,6 +1176,20 @@ def _quality_chart(local: pd.DataFrame, internet: pd.DataFrame, title: str) -> N
         font={"color": "#e2e8f0"},
     )
     st.plotly_chart(fig, use_container_width=True, key=f"quality_{title}")
+    
+    # Exibe erro de previsão se houver
+    if prediction_error:
+        st.error(f"Previsão IA indisponível: {prediction_error}")
+    elif prediction_result:
+        pred_color = {"BOM": "#28a745", "MÉDIO": "#ffc107", "RUIM": "#dc3545"}.get(prediction_result.predicted_label, "#6c757d")
+        st.markdown(
+            f'<div style="margin-top: 6px; padding: 6px; background: #0f172a; border-radius: 6px; border-left: 3px solid {pred_color};">'
+            f'<strong>🤖 Previsão IA (próxima atualização · +30s):</strong> '
+            f'<span style="color: {pred_color}; font-weight: 600;">{prediction_result.predicted_label}</span> '
+            f'({prediction_result.confidence*100:.0f}% conf.)'
+            f'</div>',
+            unsafe_allow_html=True
+        )
 
 
 def _metric_text(value, suffix: str = "") -> str:
@@ -1478,6 +1616,63 @@ def render_client_detail(repo: FrontendRepository, client_id: str) -> None:
     internet_frame = _quality_frame(internet_measurements, internet_events, "Internet")
     st.caption("Comparações, gráficos, tendência e histórico consideram somente medições dentro dos horários salvos.")
 
+    feedback_target = local_machine or internet_machine
+    if feedback_target:
+        with st.expander("Avaliação do operador & Faixas aprendidas (Bom / Médio / Ruim)", expanded=False):
+            target_feedbacks = repo.list_machine_feedback(machine_id=feedback_target.id, limit=2000)
+            from src.supadiag.network_quality import learn_quality_thresholds
+            learned = learn_quality_thresholds(target_feedbacks)
+            counts = learned["counts"]
+            ranges = learned["ranges"]
+            lat_r, jit_r, loss_r = ranges["latency_ms"], ranges["jitter_ms"], ranges["packet_loss_percent"]
+
+            if learned["has_learned"]:
+                st.caption(
+                    f"Faixas ajustadas automaticamente com base em {learned['total_feedbacks']} "
+                    f"feedback(s) salvos para {feedback_target.tag} "
+                    f"(Boa: {counts['bom']} · Média: {counts['medio']} · Ruim: {counts['ruim']})."
+                )
+            else:
+                st.caption(
+                    f"Sem feedbacks registrados para {feedback_target.tag} ainda — exibindo limites padrão "
+                    "até os primeiros feedbacks serem salvos."
+                )
+
+            c_bom, c_medio, c_ruim = st.columns(3)
+            c_bom.markdown(
+                f"**🟢 Bom**\n"
+                f"- Latência: `0` a `{lat_r['bom'][1]:.1f} ms`\n"
+                f"- Jitter: `0` a `{jit_r['bom'][1]:.1f} ms`\n"
+                f"- Perda: `0` a `{loss_r['bom'][1]:.2f}%`"
+            )
+            c_medio.markdown(
+                f"**🟡 Médio**\n"
+                f"- Latência: `{lat_r['medio'][0]:.1f}` a `{lat_r['medio'][1]:.1f} ms`\n"
+                f"- Jitter: `{jit_r['medio'][0]:.1f}` a `{jit_r['medio'][1]:.1f} ms`\n"
+                f"- Perda: `{loss_r['medio'][0]:.2f}` a `{loss_r['medio'][1]:.2f}%`"
+            )
+            c_ruim.markdown(
+                f"**🔴 Ruim**\n"
+                f"- Latência: `> {lat_r['ruim'][0]:.1f} ms`\n"
+                f"- Jitter: `> {jit_r['ruim'][0]:.1f} ms`\n"
+                f"- Perda: `> {loss_r['ruim'][0]:.2f}%`"
+            )
+
+            target_measurements = local_measurements if feedback_target == local_machine else internet_measurements
+            latest_for_feedback = target_measurements[-1] if target_measurements else None
+            st.caption("Registrar novo feedback para treinamento e ajuste das faixas:")
+            fb_cols = st.columns(3)
+            for col, (btn_label, sentiment) in zip(
+                fb_cols, (("🟢 Boa", "bom"), ("🟡 Média", "medio"), ("🔴 Ruim", "ruim"))
+            ):
+                if col.button(
+                    btn_label,
+                    key=f"detail_feedback_{feedback_target.id}_{sentiment}",
+                    use_container_width=True,
+                    disabled=not latest_for_feedback,
+                ):
+                    _record_dashboard_feedback(feedback_target, sentiment, latest_for_feedback)
+
     local_tab, internet_tab, comparison_tab, history_tab, events_tab, diagnostics_tab = st.tabs(
         ["Rede local", "Internet", "Comparação de rota", "Histórico completo", "Eventos", "Diagnóstico avançado"]
     )
@@ -1512,7 +1707,7 @@ def render_client_detail(repo: FrontendRepository, client_id: str) -> None:
             else:
                 st.info("Ainda são necessárias mais amostras para estabelecer uma linha de base local.")
         _render_link_summary("Resumo da rede local", local_frame)
-        _quality_chart(local_frame, pd.DataFrame(columns=local_frame.columns), f"Rede local · {period_label}")
+        _quality_chart(local_frame, pd.DataFrame(columns=local_frame.columns), f"Rede local · {period_label}", machine_id=local_machine_id, is_local=True)
         st.caption("Linhas tracejadas indicam limites de atenção e críticos; a linha espessa mostra a mediana móvel de 5 amostras.")
     with internet_tab:
         st.markdown("### Internet · INTERNET-CHECK")
@@ -1576,7 +1771,7 @@ def render_client_detail(repo: FrontendRepository, client_id: str) -> None:
                 if internet_history.empty:
                     st.info("Nenhuma medição ou evento de conectividade nesse intervalo e horário de trabalho.")
                 else:
-                    _quality_chart(pd.DataFrame(columns=internet_history.columns), internet_history, "Histórico de latência, jitter e perda · Internet")
+                    _quality_chart(pd.DataFrame(columns=internet_history.columns), internet_history, "Histórico de latência, jitter e perda · Internet", machine_id=internet_machine.id, is_local=False)
                     history_table = internet_history.sort_values("timestamp", ascending=False).copy()
                     history_table["timestamp"] = history_table["timestamp"].dt.strftime("%d/%m/%Y %H:%M:%S")
                     history_table = history_table.rename(columns={

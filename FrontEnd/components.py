@@ -119,22 +119,23 @@ def render_client_card(
         overall_status_icon = "⚪"
         overall_status_text = "SEM DADOS"
     
-    # Última medição de qualquer máquina
-    last_measured_at = "—"
-    all_measurements = [m["latest_measurement"] for m in local_machines if m["latest_measurement"]]
-    if internet_machine and internet_machine["latest_measurement"]:
-        all_measurements.append(internet_machine["latest_measurement"])
-    
-    if all_measurements:
-        latest_overall = max(all_measurements, key=lambda x: x.get("measured_at", ""))
+    # Adiciona previsão se a máquina estiver selecionada e houver um modelo treinado
+    if machine_id == st.session_state.get('selected_machine_id') and machine_id:
         try:
-            dt_utc = pd.to_datetime(latest_overall["measured_at"])
-            if dt_utc.tz is not None:
-                last_measured_at = dt_utc.tz_convert("America/Sao_Paulo").strftime("%Y-%m-%d %H:%M")
+            from supabase import create_client
+            from config import settings as fe_settings
+            sb = create_client(fe_settings.SUPABASE_URL, fe_settings.SUPABASE_KEY)
+            preds = sb.table("ml_model_weights").select("model_name, model_version, accuracy, weights").eq("model_name", f"network_quality_{machine_id}").order("accuracy", desc=True).limit(1).execute().data or []
+            if preds:
+                latest = preds[0]
+                pred_label = f"AI previsão: <strong>{latest.get('label', '—')}</strong> ({latest.get('confidence', 0)*100:.0f}% conf.)"
+                prediction_html = f'<div style="margin-top:8px;padding:6px 10px;background:#f7f9fa;border-radius:6px;color:#555;">{pred_label}</div>'
             else:
-                last_measured_at = dt_utc.strftime("%Y-%m-%d %H:%M")
+                prediction_html = ''
         except Exception:
-            last_measured_at = latest_overall.get("measured_at", "")[:16].replace('T', ' ')
+            prediction_html = ''
+    else:
+        prediction_html = ''
     
     # Calcula latência média da rede local
     local_latencies = [m["latest_measurement"].get("latency_ms") for m in local_machines if m["latest_measurement"] and m["latest_measurement"].get("latency_ms") is not None]
@@ -351,6 +352,7 @@ def render_machine_card(
     """
     # Calcula acurácia baseada nos feedbacks da máquina
     accuracy = 0
+    model_accuracy = None
     try:
         from supabase import create_client
         from config import settings as fe_settings
@@ -360,6 +362,11 @@ def render_machine_card(
             total = len(feedbacks)
             score = sum(1.0 if f["label"] == "bom" else 0.5 if f["label"] == "medio" else 0.0 for f in feedbacks)
             accuracy = round(score / total * 100, 1)
+        
+        # Busca acurácia do modelo treinado no Supabase
+        best_model = sb.table("ml_model_weights").select("accuracy").eq("model_name", f"network_quality_{machine.id}").order("accuracy", desc=True).limit(1).execute().data or []
+        if best_model and best_model[0].get("accuracy") is not None:
+            model_accuracy = round(best_model[0]["accuracy"] * 100, 1)
     except Exception:
         accuracy = 0
     
@@ -414,9 +421,83 @@ def render_machine_card(
         latest_alert_event.get("metric") if latest_alert_event else None,
     )
     
+    # Predictor para a máquina
+    predictor = None
+    if machine:
+        try:
+            from supabase import create_client
+            from config import settings as fe_settings
+            sb = create_client(fe_settings.SUPABASE_URL, fe_settings.SUPABASE_KEY)
+            
+            # Verifica se há modelo treinado para esta máquina no Supabase
+            model_weights = sb.table("ml_model_weights").select("id, model_name, model_version, accuracy, weights").eq("model_name", f"network_quality_{machine.id}").order("accuracy", desc=True).limit(1).execute().data or []
+            if model_weights:
+                # Se houver modelo treinado, cria uma instância do NetworkQualityPredictor
+                from src.supadiag.ml_predictor import NetworkQualityPredictor
+                from src.supadiag.config import load_settings
+                from src.supadiag.supabase_repository import SupabaseRepository
+                
+                settings = load_settings()
+                repository = SupabaseRepository(settings)
+                predictor = NetworkQualityPredictor(settings, repository)
+                
+                # Tenta carregar o modelo salvo para esta máquina
+                model_path = settings.project_root / "models" / f"model_{machine.id[:8]}.pth"
+                if not model_path.is_file():
+                    # Se o modelo local não existe, restaura do Supabase
+                    predictor.restore_from_supabase(machine.id, model_path)
+                if model_path.is_file():
+                    predictor.load_model(str(model_path))
+        except Exception as e:
+            # Se houver algum erro, deixa o predictor como None
+            pass
+
+    # Preparar HTML da previsão para exibição
+    prediction_html = ''
+    if predictor:
+        try:
+            # Tentar obter previsão do modelo usando medições recentes
+            # Buscar medições das últimas 24 horas
+            measurements = predictor.repository.get_measurements(machine.id, hours=24, limit=500)
+            if measurements and len(measurements) >= 12:  # Mínimo necessário para previsão
+                # Fazer previsão para a próxima hora
+                prediction_result = predictor.predict_next_hour(machine.id, measurements, horizon_hours=1)
+                if prediction_result:
+                    # Extrair resultado da previsão (próxima hora)
+                    label = prediction_result.predicted_label
+                    confidence = prediction_result.confidence
+                    
+                    # Traduzir label para garantir consistência
+                    # Os labels já vem em português do predictor: "BOM", "MÉDIO", "RUIM"
+                    prediction_html = f'<div style="margin-top:8px;padding:6px 10px;background:#f0f9ff;border-radius:6px;border-left:3px solid #1e90ff;color:#1e90ff;">🤖 AI: <strong>{label}</strong> ({confidence*100:.0f}% conf.)</div>'
+            else:
+                # Dados insuficientes
+                prediction_html = '<div style="margin-top:8px;padding:6px 10px;background:#f0f9ff;border-radius:6px;border-left:3px solid #1e90ff;color:#6c757d;">🤖 AI: Dados insuficientes</div>'
+        except Exception as e:
+            # Em caso de erro, exibir mensagem genérica
+            prediction_html = '<div style="margin-top:8px;padding:6px 10px;background:#f0f9ff;border-radius:6px;border-left:3px solid #1e90ff;color:#6c757d;">🤖 AI: Indisponível</div>'
+    
     # Card HTML customizado
     acc_color = "#28a745" if accuracy >= 80 else "#ffc107" if accuracy >= 50 else "#dc3545"
     acc_label = f"{accuracy}%" if accuracy > 0 else "Sem dados"
+    
+    # Badge de acurácia do modelo (se disponível)
+    model_acc_html = ""
+    if model_accuracy is not None:
+        model_acc_color = "#28a745" if model_accuracy >= 80 else "#ffc107" if model_accuracy >= 50 else "#dc3545"
+        model_acc_html = f"""
+                    <span style="
+                        background: {model_acc_color};
+                        color: white;
+                        padding: 2px 8px;
+                        border-radius: 8px;
+                        font-size: 0.7rem;
+                        font-weight: 600;
+                        margin-left: 6px;
+                    ">
+                        IA: {model_accuracy}%
+                    </span>"""
+    
     card_html = f"""
     <div style="
         border: 1px solid #e0e0e0;
@@ -441,8 +522,8 @@ def render_machine_card(
                         font-size: 0.7rem;
                         font-weight: 600;
                     ">
-                        Acuracia: {acc_label}
-                    </span>
+                        Feedback: {acc_label}
+                    </span>{model_acc_html}
                 </h4>
                 <p style="margin: 0; color: #666; font-size: 0.9rem;">
                     {client.name if client else f"Cliente: {machine.client_id[:8]}..."}
@@ -489,6 +570,7 @@ def render_machine_card(
             {traceroute_badge}
             {alert_badge}
         </div>
+        {f'<div style="margin-top: 12px; padding: 10px; background: #f0f9ff; border-radius: 6px; border-left: 3px solid #1e90ff;"><div style="font-size: 0.85rem; font-weight: 600; color: #1e90ff;">Previsão IA:</div><div style="font-size: 0.8rem; color: #555;">{prediction_html}</div></div>' if predictor else ''}
     </div>
     """
     
@@ -655,7 +737,12 @@ def _save_feedback(machine_id: str, label: str, measurement: Optional[dict]) -> 
         st.error(f"Erro ao salvar feedback: {exc}")
 
 
-def render_metrics_charts(measurements: list[dict], machine_tag: str, key_suffix: str = "") -> None:
+def render_metrics_charts(
+    measurements: list[dict],
+    machine_tag: str,
+    key_suffix: str = "",
+    machine_id: str | None = None,
+) -> None:
     """
     Renderiza gráficos de métricas (latência, jitter, perda) usando Plotly.
     
@@ -663,6 +750,7 @@ def render_metrics_charts(measurements: list[dict], machine_tag: str, key_suffix
         measurements: Lista de medições (dict) ordenadas cronologicamente
         machine_tag: Tag da máquina para título
         key_suffix: Sufixo único para o key do gráfico forçar re-render
+        machine_id: ID da máquina (opcional) para buscar previsão IA
     """
     if not measurements:
         st.info("Nenhuma medição disponível para o período selecionado.")
@@ -689,6 +777,36 @@ def render_metrics_charts(measurements: list[dict], machine_tag: str, key_suffix
     except Exception as exc:
         st.error(f"Erro ao processar dados do gráfico: {exc}")
         return
+    
+    # Busca previsão IA se machine_id fornecido
+    prediction_result = None
+    model_accuracy = None
+    if machine_id:
+        try:
+            from src.supadiag.ml_predictor import NetworkQualityPredictor
+            from src.supadiag.config import load_settings
+            from src.supadiag.supabase_repository import SupabaseRepository
+            
+            settings = load_settings()
+            # Cria SupabaseRepository próprio (não usa o repo do frontend que é FrontendRepository)
+            supabase_repo = SupabaseRepository(settings)
+            predictor = NetworkQualityPredictor(settings, supabase_repo)
+            
+            model_path = settings.project_root / "models" / f"model_{machine_id[:8]}.pth"
+            if not model_path.is_file():
+                predictor.restore_from_supabase(machine_id, model_path)
+            if model_path.is_file():
+                predictor.load_model(str(model_path))
+                # Faz previsão para próxima hora
+                if len(measurements) >= 12:
+                    prediction_result = predictor.predict_next_hour(machine_id, measurements, horizon_hours=1)
+                
+                # Busca acurácia do modelo salvo no Supabase
+                best_model = repo.get_best_model_weights(f"network_quality_{machine_id}")
+                if best_model and best_model.get("accuracy") is not None:
+                    model_accuracy = best_model["accuracy"]
+        except Exception:
+            pass  # Silencia erros de predição
     
     # Cria subplots: latência + jitter (mesmo eixo Y) e perda (eixo separado)
     fig = make_subplots(
@@ -734,6 +852,49 @@ def render_metrics_charts(measurements: list[dict], machine_tag: str, key_suffix
         row=1, col=1
     )
     
+    # Previsão IA: linha horizontal tracejada amarela 1h à frente
+    if prediction_result:
+        # Mapeia label para valor numérico para posicionar a linha
+        label_map = {"BOM": 0, "MÉDIO": 1, "RUIM": 2}
+        pred_class = label_map.get(prediction_result.predicted_label, 1)
+        
+        # Calcula posição 1 hora à frente da última medição
+        last_ts = df["timestamp"].max()
+        pred_ts = last_ts + pd.Timedelta(hours=1)
+        
+        # Adiciona linha horizontal tracejada amarela para a previsão
+        # Usa add_shape para linha horizontal no nível da predição
+        y_positions = {"BOM": 30, "MÉDIO": 80, "RUIM": 180}  # Valores aproximados de latência por classe
+        y_pred = y_positions.get(prediction_result.predicted_label, 80)
+        
+        fig.add_shape(
+            type="line",
+            x0=last_ts,
+            x1=pred_ts,
+            y0=y_pred,
+            y1=y_pred,
+            line=dict(color="#ffc107", width=3, dash="dash"),
+            xref="x",
+            yref="y",
+            row=1, col=1
+        )
+        
+        # Adiciona marcador no final da linha de previsão
+        fig.add_trace(
+            go.Scatter(
+                x=[pred_ts],
+                y=[y_pred],
+                mode="markers+text",
+                name=f"IA: {prediction_result.predicted_label} ({prediction_result.confidence*100:.0f}%)",
+                marker=dict(color="#ffc107", size=12, symbol="diamond"),
+                text=[f"IA: {prediction_result.predicted_label}"],
+                textposition="top center",
+                textfont=dict(color="#ffc107", size=10, weight="bold"),
+                showlegend=True,
+            ),
+            row=1, col=1
+        )
+    
     # Perda de pacotes (barras)
     colors = ["#28a745" if v == 0 else "#ffc107" if v < 5 else "#dc3545" for v in df["packet_loss_percent"]]
     fig.add_trace(
@@ -752,9 +913,13 @@ def render_metrics_charts(measurements: list[dict], machine_tag: str, key_suffix
     fig.add_hline(y=5, line_dash="dash", line_color="#dc3545", row=2, col=1, annotation_text="5%")
     
     # Layout
+    title_suffix = ""
+    if model_accuracy is not None:
+        title_suffix = f"  |  Acurácia Modelo: {model_accuracy*100:.1f}%"
+    
     fig.update_layout(
         height=500,
-        title=f"Métricas de Rede - {machine_tag}",
+        title=f"Métricas de Rede - {machine_tag}{title_suffix}",
         title_x=0.5,
         hovermode="x unified",
         legend=dict(
@@ -806,6 +971,19 @@ def render_metrics_charts(measurements: list[dict], machine_tag: str, key_suffix
             f"{uptime:.1f}%",
             delta=f"{(df['status'] == 'ok').sum()}/{len(df)} amostras"
         )
+    
+    # Exibe info da previsão abaixo do gráfico
+    if prediction_result:
+        pred_color = {"BOM": "#28a745", "MÉDIO": "#ffc107", "RUIM": "#dc3545"}.get(prediction_result.predicted_label, "#6c757d")
+        st.markdown(
+            f'<div style="margin-top: 8px; padding: 8px; background: #fffbf0; border-radius: 6px; border-left: 3px solid {pred_color};">'
+            f'<strong>🤖 Previsão IA (1h à frente):</strong> '
+            f'<span style="color: {pred_color}; font-weight: 600;">{prediction_result.predicted_label}</span> '
+            f'({prediction_result.confidence*100:.0f}% conf.) '
+            f'— Previsto para: {prediction_result.forecast_hours[0] if prediction_result.forecast_hours else "—"}'
+            f'</div>',
+            unsafe_allow_html=True
+        )
 
 
 def render_status_badge(status: str) -> str:
@@ -844,6 +1022,10 @@ def render_sidebar_filters(repo) -> dict:
         
         st.divider()
         st.caption("AI Network Analyzer")
+        
+        # Versão do Dashboard
+        from app import DASHBOARD_VERSION
+        st.caption(f"v{DASHBOARD_VERSION}")
     
     return {
         "client_id": selected_client_id,

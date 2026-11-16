@@ -520,8 +520,8 @@ def render_events_tab(repo):
                         "IP": ip,
                         "Evento": tipo_label,
                         "Perda (%)": f"{ev.get('packet_loss_percent') or 0}%",
-                        "Latência (ms)": ev.get("latency_ms") or "-",
-                        "Jitter (ms)": ev.get("jitter_ms") or "-",
+                        "Latência (ms)": ev.get("latency_ms"),
+                        "Jitter (ms)": ev.get("jitter_ms"),
                         "Pacotes": f"{ev.get('packets_received') or 0}/{ev.get('packets_sent') or 0}",
                         "Status Anterior": ev.get("previous_status") or "-",
                     })

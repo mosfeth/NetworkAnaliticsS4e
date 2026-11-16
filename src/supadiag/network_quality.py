@@ -6,6 +6,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from statistics import median
 from typing import Any
 
 from .config import Settings
@@ -45,6 +46,112 @@ class UserFeedback:
 
 REACHABLE_STATUSES = {"ok", "partial"}
 
+DEFAULT_THRESHOLDS = {
+    "latency_ms": {"warn": 100.0, "crit": 150.0},
+    "jitter_ms": {"warn": 20.0, "crit": 30.0},
+    "packet_loss_percent": {"warn": 0.5, "crit": 1.0},
+}
+DEFAULT_LATENCY_CENTROIDS = {"BOM": 30.0, "MÉDIO": 80.0, "RUIM": 180.0}
+
+
+def learn_quality_thresholds(feedbacks: list[dict[str, Any]]) -> dict[str, Any]:
+    """
+    Aprende as faixas de qualidade (BOM / MÉDIO / RUIM) a partir dos feedbacks
+    salvos pelo operador em `machine_feedback`.
+    """
+    counts = {"bom": 0, "medio": 0, "ruim": 0}
+    grouped: dict[str, dict[str, list[float]]] = {
+        metric: {"bom": [], "medio": [], "ruim": []}
+        for metric in DEFAULT_THRESHOLDS
+    }
+
+    for row in feedbacks or []:
+        label = str(row.get("label", "")).lower()
+        if label not in counts:
+            continue
+        counts[label] += 1
+        for metric in DEFAULT_THRESHOLDS:
+            raw = row.get(metric)
+            if raw is None and metric == "packet_loss_percent":
+                raw = row.get("packet_loss_pct")
+            try:
+                val = float(raw)
+                if math.isfinite(val) and val >= 0:
+                    grouped[metric][label].append(val)
+            except (TypeError, ValueError):
+                continue
+
+    thresholds: dict[str, dict[str, float]] = {}
+    ranges: dict[str, dict[str, tuple[float, float | None]]] = {}
+    for metric, defaults in DEFAULT_THRESHOLDS.items():
+        bom_vals = sorted(grouped[metric]["bom"])
+        medio_vals = sorted(grouped[metric]["medio"])
+        ruim_vals = sorted(grouped[metric]["ruim"])
+
+        bom_med = median(bom_vals) if bom_vals else None
+        medio_med = median(medio_vals) if medio_vals else None
+        ruim_med = median(ruim_vals) if ruim_vals else None
+
+        warn = defaults["warn"]
+        if bom_med is not None and medio_med is not None and bom_med < medio_med:
+            warn = (bom_med + medio_med) / 2.0
+        elif bom_med is not None and ruim_med is not None and bom_med < ruim_med:
+            warn = bom_med + (ruim_med - bom_med) / 3.0
+        elif bom_vals and bom_vals[-1] > 0:
+            warn = max(defaults["warn"], bom_vals[-1] * 1.1)
+        elif medio_vals and medio_vals[0] > 0:
+            warn = min(defaults["warn"], medio_vals[0])
+
+        crit = defaults["crit"]
+        if medio_med is not None and ruim_med is not None and medio_med < ruim_med:
+            crit = (medio_med + ruim_med) / 2.0
+        elif bom_med is not None and ruim_med is not None and bom_med < ruim_med:
+            crit = bom_med + 2.0 * (ruim_med - bom_med) / 3.0
+        elif ruim_vals and ruim_vals[0] > warn:
+            crit = ruim_vals[0]
+
+        if crit <= warn:
+            crit = max(warn * 1.25, warn + 1.0)
+
+        warn = round(warn, 2)
+        crit = round(crit, 2)
+        thresholds[metric] = {"warn": warn, "crit": crit}
+        ranges[metric] = {
+            "bom": (0.0, warn),
+            "medio": (warn, crit),
+            "ruim": (crit, None),
+        }
+
+    lat_grouped = grouped["latency_ms"]
+    latency_centroids = {
+        "BOM": round(median(lat_grouped["bom"]), 1) if lat_grouped["bom"] else DEFAULT_LATENCY_CENTROIDS["BOM"],
+        "MÉDIO": round(median(lat_grouped["medio"]), 1) if lat_grouped["medio"] else DEFAULT_LATENCY_CENTROIDS["MÉDIO"],
+        "RUIM": round(median(lat_grouped["ruim"]), 1) if lat_grouped["ruim"] else DEFAULT_LATENCY_CENTROIDS["RUIM"],
+    }
+
+    metric_centroids: dict[str, tuple[float, float, float]] = {}
+    for metric, defaults in DEFAULT_THRESHOLDS.items():
+        g = grouped[metric]
+        fallback_bom = DEFAULT_LATENCY_CENTROIDS["BOM"] if metric == "latency_ms" else round(defaults["warn"] * 0.5, 2)
+        fallback_med = DEFAULT_LATENCY_CENTROIDS["MÉDIO"] if metric == "latency_ms" else round((defaults["warn"] + defaults["crit"]) / 2.0, 2)
+        fallback_ruim = DEFAULT_LATENCY_CENTROIDS["RUIM"] if metric == "latency_ms" else round(defaults["crit"] * 1.5, 2)
+        metric_centroids[metric] = (
+            round(median(g["bom"]), 2) if g["bom"] else fallback_bom,
+            round(median(g["medio"]), 2) if g["medio"] else fallback_med,
+            round(median(g["ruim"]), 2) if g["ruim"] else fallback_ruim,
+        )
+
+    total = sum(counts.values())
+    return {
+        "total_feedbacks": total,
+        "counts": counts,
+        "has_learned": total > 0,
+        "thresholds": thresholds,
+        "ranges": ranges,
+        "latency_centroids": latency_centroids,
+        "metric_centroids": metric_centroids,
+    }
+
 
 class NetworkQualityAnalyzer:
     """Analisador de qualidade de rede com classificação BOM/MÉDIO/RUIM."""
@@ -58,22 +165,23 @@ class NetworkQualityAnalyzer:
         avg_jitter_ms: float | None,
         avg_latency_ms: float | None,
         packet_loss_pct: float,
+        learned_thresholds: dict[str, Any] | None = None,
     ) -> str:
         """
-        Classifica qualidade da conexão baseado em thresholds.
-
-        Regras:
-        - BOM: jitter < 20ms, latência < 100ms, perda < 0.5%
-        - MÉDIO: jitter < 30ms, latência < 150ms, perda < 1%
-        - RUIM: qualquer valor acima dos limites MÉDIO
+        Classifica qualidade da conexão baseado em thresholds (fixos ou aprendidos dos feedbacks).
         """
         jitter = avg_jitter_ms if avg_jitter_ms is not None else 0.0
         latency = avg_latency_ms if avg_latency_ms is not None else 0.0
         loss = packet_loss_pct if packet_loss_pct is not None else 0.0
 
-        if jitter < 20 and latency < 100 and loss < 0.5:
+        th = (learned_thresholds or {}).get("thresholds", DEFAULT_THRESHOLDS)
+        lat_th = th.get("latency_ms", DEFAULT_THRESHOLDS["latency_ms"])
+        jit_th = th.get("jitter_ms", DEFAULT_THRESHOLDS["jitter_ms"])
+        loss_th = th.get("packet_loss_percent", DEFAULT_THRESHOLDS["packet_loss_percent"])
+
+        if jitter < jit_th["warn"] and latency < lat_th["warn"] and loss < loss_th["warn"]:
             return "BOM"
-        elif jitter < 30 and latency < 150 and loss < 1:
+        elif jitter < jit_th["crit"] and latency < lat_th["crit"] and loss < loss_th["crit"]:
             return "MEDIO"
         else:
             return "RUIM"

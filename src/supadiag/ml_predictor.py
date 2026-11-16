@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -96,6 +97,54 @@ class NetworkQualityPredictor:
         except Exception:
             return False
 
+    def _ensure_model_loaded(self, machine_id: str) -> None:
+        """Garante que o melhor modelo do equipamento esteja carregado em memória."""
+        if self.loaded_machine_id == machine_id and self.scaler_mean is not None:
+            return
+        model_path = self.model_path or (
+            self.settings.project_root / "models" / f"model_{machine_id[:8]}.pth"
+        )
+        if not model_path.is_file():
+            # Sem arquivo local: restaura o melhor modelo persistido no Supabase.
+            self.restore_from_supabase(machine_id, model_path)
+        if not model_path.is_file():
+            raise FileNotFoundError(
+                f"Modelo ainda não treinado para esta máquina. Treine pelo botão do dashboard. ({model_path})"
+            )
+        self.load_model(str(model_path))
+        if self.loaded_machine_id != machine_id:
+            raise ValueError("O modelo salvo pertence a outra máquina; treine novamente.")
+
+    def _resolve_context(
+        self,
+        machine_id: str,
+        measurements: list[dict] | None,
+        internet_measurements: list[dict] | None = None,
+    ) -> tuple[list[dict], list[dict], bool, timedelta]:
+        """Resolve medições locais/internet e janela de pareamento para o equipamento."""
+        if measurements is None:
+            measurements = self.repository.get_measurements(machine_id, hours=24, limit=500)
+
+        machine = self.repository.get_machine(machine_id)
+        related = self.repository.list_machines(client_id=machine.client_id, active_only=True) if machine else []
+        internet_machine = next((item for item in related if item.tag == "INTERNET-CHECK"), None)
+        if machine and machine.tag == "INTERNET-CHECK":
+            resolved_internet = measurements
+            internet_only = True
+        else:
+            if internet_measurements is not None:
+                resolved_internet = internet_measurements
+            elif internet_machine:
+                resolved_internet = self.repository.get_measurements(internet_machine.id, hours=24, limit=500)
+            else:
+                resolved_internet = []
+            internet_only = False
+
+        local_frequency = (getattr(machine, "frequency_seconds", 300) or 300) if machine else 300
+        internet_frequency = (getattr(internet_machine, "frequency_seconds", 300) or 300) if internet_machine else 300
+        pair_age = timedelta(seconds=max(900, local_frequency * 3, internet_frequency * 3))
+        return measurements, resolved_internet, internet_only, pair_age
+
     def predict_next_hour(
         self,
         machine_id: str,
@@ -113,44 +162,14 @@ class NetworkQualityPredictor:
         Returns:
             PredictionResult com a previsão de cada hora do horizonte
         """
-        if measurements is None:
-            measurements = self.repository.get_measurements(machine_id, hours=24, limit=500)
-
-        machine = self.repository.get_machine(machine_id)
-        related = self.repository.list_machines(client_id=machine.client_id, active_only=True) if machine else []
-        internet_machine = next((item for item in related if item.tag == "INTERNET-CHECK"), None)
-        if machine and machine.tag == "INTERNET-CHECK":
-            internet_measurements = measurements
-            internet_only = True
-        else:
-            internet_measurements = (
-                self.repository.get_measurements(internet_machine.id, hours=24, limit=500)
-                if internet_machine else []
-            )
-            internet_only = False
-
-        model_path = self.model_path or (
-            self.settings.project_root / "models" / f"model_{machine_id[:8]}.pth"
+        measurements, internet_measurements, internet_only, pair_age = self._resolve_context(
+            machine_id, measurements
         )
-        if not model_path.is_file():
-            # Sem arquivo local: restaura o melhor modelo persistido no Supabase.
-            self.restore_from_supabase(machine_id, model_path)
-        if not model_path.is_file():
-            raise FileNotFoundError(
-                f"Modelo ainda não treinado para esta máquina. Treine pelo botão do dashboard. ({model_path})"
-            )
-        if self.loaded_machine_id != machine_id:
-            self.load_model(str(model_path))
-        if self.loaded_machine_id != machine_id:
-            raise ValueError("O modelo salvo pertence a outra máquina; treine novamente.")
+        self._ensure_model_loaded(machine_id)
 
         if len(measurements) < 12:
             raise ValueError("Dados insuficientes para previsão (mínimo 12 medições)")
 
-        # Prepara sequência de entrada
-        local_frequency = (getattr(machine, "frequency_seconds", 300) or 300) if machine else 300
-        internet_frequency = (getattr(internet_machine, "frequency_seconds", 300) or 300) if internet_machine else 300
-        pair_age = timedelta(seconds=max(900, local_frequency * 3, internet_frequency * 3))
         sequence = self._prepare_sequence(
             measurements[-12:], internet_measurements, internet_only, pair_age
         )
@@ -200,6 +219,58 @@ class NetworkQualityPredictor:
             forecast_confidences=forecast_confidences,
         )
 
+    def predict_series(
+        self,
+        machine_id: str,
+        measurements: list[dict] | None = None,
+        internet_measurements: list[dict] | None = None,
+        max_points: int = 120,
+        horizon_seconds: int = 3600,
+    ) -> list[dict[str, Any]]:
+        """Gera previsões em janelas deslizantes para acompanhar a previsão no tempo."""
+        measurements, resolved_internet, internet_only, pair_age = self._resolve_context(
+            machine_id, measurements, internet_measurements=internet_measurements
+        )
+        self._ensure_model_loaded(machine_id)
+
+        if len(measurements) < 12:
+            return []
+
+        def parse_stamp(row: dict) -> datetime:
+            stamp = datetime.fromisoformat(str(row.get("measured_at", "")).replace("Z", "+00:00"))
+            return stamp.replace(tzinfo=timezone.utc) if stamp.tzinfo is None else stamp.astimezone(timezone.utc)
+
+        ordered = sorted(measurements, key=parse_stamp)
+        full_features = self._prepare_sequence(ordered, resolved_internet, internet_only, pair_age)
+
+        total = len(ordered)
+        start_idx = max(12, total - max(1, max_points) + 1)
+        windows = [full_features[end_idx - 12:end_idx] for end_idx in range(start_idx, total + 1)]
+        if not windows:
+            return []
+
+        batch_tensor = torch.FloatTensor(np.stack(windows)).to(self.device)
+        with torch.no_grad():
+            probs = torch.softmax(self.model(batch_tensor), dim=1)
+            confidences, class_indices = torch.max(probs, dim=1)
+
+        labels = ["BOM", "MÉDIO", "RUIM"]
+        series: list[dict[str, Any]] = []
+        for idx, end_idx in enumerate(range(start_idx, total + 1)):
+            base_ts = parse_stamp(ordered[end_idx - 1])
+            forecast_ts = base_ts + timedelta(seconds=horizon_seconds)
+            cls_idx = int(class_indices[idx].item())
+            prob_list = [float(p) for p in probs[idx].tolist()]
+            series.append({
+                "base_at": base_ts.isoformat(),
+                "forecast_at": forecast_ts.isoformat(),
+                "predicted_class": cls_idx,
+                "predicted_label": labels[cls_idx],
+                "confidence": float(confidences[idx].item()),
+                "probs": prob_list,
+            })
+        return series
+
     def _prepare_sequence(
         self,
         measurements: list[dict],
@@ -218,6 +289,13 @@ class NetworkQualityPredictor:
             ((parse_stamp(row), row) for row in internet_measurements), key=lambda pair: pair[0]
         )
         internet_times = [stamp for stamp, _ in timed_internet]
+        def safe_float(value: Any) -> float:
+            try:
+                num = float(value)
+                return num if math.isfinite(num) else 0.0
+            except (TypeError, ValueError):
+                return 0.0
+
         sequence = []
         for row in measurements:
             stamp = parse_stamp(row)
@@ -230,10 +308,10 @@ class NetworkQualityPredictor:
                 internet_row = internet_row or row
                 local_metrics = (0.0, 0.0, 0.0)
             else:
-                local_metrics = tuple(float(row.get(field) or 0) for field in (
+                local_metrics = tuple(safe_float(row.get(field)) for field in (
                     "latency_ms", "jitter_ms", "packet_loss_percent"
                 ))
-            internet_metrics = tuple(float((internet_row or {}).get(field) or 0) for field in (
+            internet_metrics = tuple(safe_float((internet_row or {}).get(field)) for field in (
                 "latency_ms", "jitter_ms", "packet_loss_percent"
             ))
             hour, day = local_stamp.hour, local_stamp.weekday()
@@ -246,4 +324,4 @@ class NetworkQualityPredictor:
         values = np.asarray(sequence, dtype=np.float32)
         if self.scaler_mean is not None and self.scaler_scale is not None:
             values = (values - self.scaler_mean) / np.where(self.scaler_scale == 0, 1, self.scaler_scale)
-        return values
+        return np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
